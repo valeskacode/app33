@@ -21,6 +21,7 @@ from utils.helpers import (
     registrar_historial, leer_historial, ahora_peru,
     calcular_resultado, criterios_seleccionados_lista,
     generar_word, generar_pdf, guardar_reporte_en_carpeta,
+    sincronizar_historial_onedrive,
     reporte_consolidado_por_agencia, reporte_consolidado_por_cliente,
     # 📌 NUEVO — para la pantalla de Búsqueda igualando el mockup:
     iniciales, clase_calificacion, clientes_similares, solo_digitos,
@@ -805,37 +806,67 @@ def pantalla_reporte():
                                     st.session_state.rcc, st.session_state.usuario, cliente_visitado,
                                     observacion_criterio)
                 nombre = base_nombre + ".docx"
-                ruta = guardar_reporte_en_carpeta(nombre, buf.getvalue())
+                guardado = guardar_reporte_en_carpeta(nombre, buf.getvalue())
+                sincronizar_historial_onedrive()
                 n_ag, n_gen = registrar_historial(st.session_state.usuario, c, "Word", nombre,
-                                                   "; ".join(criterios_txt), cliente_visitado, ruta)
+                                                   "; ".join(criterios_txt), cliente_visitado,
+                                                   guardado.get("online") or guardado.get("local"))
                 st.session_state.ultimo_archivo = (nombre, buf.getvalue(), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-                st.session_state["ultimo_conteo"] = (n_ag, n_gen, ruta)
+                st.session_state["ultimo_conteo"] = (n_ag, n_gen, guardado)
         with c2:
             if st.button("📕 Generar PDF", use_container_width=True, type="primary"):
                 buf = generar_pdf(c, criterios_txt, calc, ing, visitas, st.session_state.garantias,
                                    st.session_state.rcc, st.session_state.usuario, cliente_visitado,
                                    observacion_criterio)
                 nombre = base_nombre + ".pdf"
-                ruta = guardar_reporte_en_carpeta(nombre, buf.getvalue())
+                guardado = guardar_reporte_en_carpeta(nombre, buf.getvalue())
+                sincronizar_historial_onedrive()
                 n_ag, n_gen = registrar_historial(st.session_state.usuario, c, "PDF", nombre,
-                                                   "; ".join(criterios_txt), cliente_visitado, ruta)
+                                                   "; ".join(criterios_txt), cliente_visitado,
+                                                   guardado.get("online") or guardado.get("local"))
                 st.session_state.ultimo_archivo = (nombre, buf.getvalue(), "application/pdf")
-                st.session_state["ultimo_conteo"] = (n_ag, n_gen, ruta)
+                st.session_state["ultimo_conteo"] = (n_ag, n_gen, guardado)
 
         if st.session_state.ultimo_archivo:
             nombre, contenido, mime = st.session_state.ultimo_archivo
             st.download_button(f"⬇️ Descargar {nombre}", data=contenido, file_name=nombre, mime=mime, use_container_width=True)
-            n_ag, n_gen, ruta = st.session_state.get("ultimo_conteo", (None, None, ""))
+            n_ag, n_gen, guardado = st.session_state.get("ultimo_conteo", (None, None, {}))
             agencia_txt = safe_str(c.get("AGENCIA"), "-")
             if n_ag is not None:
                 st.success(
                     f"Reporte generado. Visita N° {n_ag} en la agencia **{agencia_txt}** "
                     f"(N° {n_gen} en general)."
                 )
-            if ruta:
-                st.caption(f"📁 Copia guardada en: `{ruta}`")
+            if isinstance(guardado, dict):
+                if guardado.get("online"):
+                    st.markdown(f"☁️ **Subido a OneDrive:** [Abrir archivo]({guardado['online']})")
+                elif guardado.get("local"):
+                    st.caption(f"📁 Copia local guardada en: `{guardado['local']}`")
+                if guardado.get("error"):
+                    st.caption(f"⚠ {guardado['error']}")
+
+    with st.expander("☁️ Estado de conexión OneDrive"):
+        from utils.onedrive import credenciales_configuradas, test_conexion, listar_carpeta
+        if credenciales_configuradas():
+            ok, msg = test_conexion()
+            if ok:
+                st.success(msg)
+                archivos = listar_carpeta("Reportes")
+                if archivos:
+                    st.caption(f"📂 Últimos archivos en OneDrive ({len(archivos)} reportes):")
+                    for a in archivos[-5:]:
+                        st.caption(f"  • [{a['name']}]({a['webUrl']}) — {a['fecha']}")
             else:
-                st.caption("⚠ No se pudo guardar copia automática en la carpeta de reportes; usa el botón de descarga.")
+                st.error(msg)
+        else:
+            st.info(
+                "OneDrive no está configurado todavía. "
+                "Para activarlo, agrega las 3 variables en **Settings → Secrets** de Streamlit Cloud:\n\n"
+                "```\nGRAPH_CLIENT_ID = \"...\"\nGRAPH_CLIENT_SECRET = \"...\"\n"
+                "GRAPH_TENANT_ID = \"...\"\nGRAPH_ONEDRIVE_USER = \"auditoria@cajaarequipa.com.pe\"\n"
+                "GRAPH_ONEDRIVE_CARPETA = \"Auditoria/VisitaClientes\"\n```\n\n"
+                "Consulta el archivo `GUIA_AZURE.md` para obtener esas credenciales."
+            )
 
     with st.expander("🗂️ Ver historial de reportes generados"):
         hist = leer_historial()
