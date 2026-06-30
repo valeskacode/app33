@@ -565,6 +565,7 @@ def generar_word(cliente, criterios_txt, ingresos_calc, ingresos_raw, visitas, g
         return table
 
     doc = Document()
+    titulo = doc.add_heading("VISITA A CLIENTES", 0)
     p = doc.add_paragraph("CMAC Caja Arequipa — Unidad de Auditoría Interna")
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     doc.add_paragraph(f"Auditor: {usuario}  ·  Fecha de visita: {ahora_peru().strftime('%d/%m/%Y %H:%M')} (hora Perú)")
@@ -664,6 +665,7 @@ def generar_pdf(cliente, criterios_txt, ingresos_calc, ingresos_raw, visitas, ga
     normal = styles["Normal"]
 
     elems = [
+        Paragraph("VISITA A CLIENTES", h1),
         Paragraph("CMAC Caja Arequipa — Unidad de Auditoría Interna", normal),
         Paragraph(f"Auditor: {usuario} · Fecha de visita: {ahora_peru().strftime('%d/%m/%Y %H:%M')} (hora Perú)", normal),
         Spacer(1, 10),
