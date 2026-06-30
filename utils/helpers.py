@@ -1,753 +1,660 @@
 # -*- coding: utf-8 -*-
 """
-utils/helpers.py
-Funciones compartidas por toda la app: estilos, lectura de Excel,
-autoguardado/recuperación de avance, historial y generación de reportes
-(Word y PDF).
+app.py — Visita a Clientes de Pequeña Empresa (CMAC Caja Arequipa)
+
+Flujo: Búsqueda y carga -> Evaluación de crédito (criterios) ->
+       Ficha del cliente -> Ingresos y gastos -> Ubicación (visita) -> Reporte
+
+Diseño mobile-first (ver assets/style.css). El procesamiento del Excel
+ocurre en el servidor (no en el celular ni la PC del usuario), y se
+cachea con @st.cache_data, así que carga igual de rápido en ambos.
 """
-import io
-import json
-import os
-import re
-import shutil
 from datetime import datetime
 
 import pandas as pd
 import streamlit as st
 
-try:
-    from zoneinfo import ZoneInfo
-    TZ_PERU = ZoneInfo("America/Lima")
-except Exception:  # pragma: no cover - fallback si no hay tzdata
-    TZ_PERU = None
+from utils.helpers import (
+    load_css, safe_str, safe_float, fmt_money, slug,
+    cargar_excel, CRITERIOS_DEF, CLIENTE_VISITADO_OPCIONES,
+    hay_borrador, guardar_borrador, cargar_borrador, borrar_borrador,
+    registrar_historial, ahora_peru,
+    calcular_resultado, criterios_seleccionados_lista,
+    generar_word, generar_pdf, guardar_reporte_en_carpeta,
+    reporte_consolidado_por_agencia, reporte_consolidado_por_cliente,
+    generar_resumen_agencia_excel,
+)
 
+st.set_page_config(
+    page_title="Visita a Clientes - Caja Arequipa",
+    page_icon="🏦",
+    layout="centered",
+    initial_sidebar_state="collapsed",
+)
+load_css("assets/style.css")
 
-def ahora_peru() -> datetime:
-    """Devuelve la fecha/hora ACTUAL de Perú (America/Lima, UTC-5),
-    sin importar en qué servidor/huso horario corra Streamlit Cloud.
-    Usar SIEMPRE esta función en vez de datetime.now() para que la
-    hora/fecha de visita se autocomplete correctamente en Perú."""
-    if TZ_PERU is not None:
-        return datetime.now(TZ_PERU)
-    return datetime.now()
+# --------------------------------------------------------------------------
+# ESTADO INICIAL
+# --------------------------------------------------------------------------
+DEFAULTS = {
+    "usuario": "",
+    "view": "busqueda",
+    "df": None,
+    "hoja_usada": "",
+    "cliente_actual": None,
+    "visitas": {},
+    "garantias": [],
+    "rcc": [],
+    "borrador_prompt": False,
+    "ultimo_archivo": None,
+    "cliente_visitado": "",
+    "historial_actual": None,
+}
+for k, v in DEFAULTS.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
 
 # --------------------------------------------------------------------------
-# RUTAS DE DATOS LOCALES (persisten mientras el servidor no se reinicie)
+# COMPONENTES COMUNES
 # --------------------------------------------------------------------------
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(BASE_DIR, "data")
-DRAFTS_DIR = os.path.join(DATA_DIR, "drafts")
-FOTOS_DIR = os.path.join(DRAFTS_DIR, "fotos")
-HISTORIAL_PATH = os.path.join(DATA_DIR, "historial_visitas.xlsx")
+def header(icono, titulo, subtitulo=""):
+    st.markdown(
+        f"""<div class="app-header">
+                <div class="icon-box">{icono}</div>
+                <div class="titles">
+                    <h1>{titulo}</h1>
+                    <p>{subtitulo}</p>
+                </div>
+            </div>""",
+        unsafe_allow_html=True,
+    )
 
-# --------------------------------------------------------------------------
-# 📁 CARPETA DE ALMACENAMIENTO DE REPORTES (Word/PDF) — EDITAR AQUÍ 👇
-# --------------------------------------------------------------------------
-# Cambia esta ruta a la carpeta donde quieres que se guarden TODOS los
-# reportes generados (Word y PDF) cada vez que alguien presiona
-# "Generar Word" / "Generar PDF" en la vista de Reporte.
-#
-# Para que terminen sincronizados en OneDrive (sin necesitar credenciales
-# de Microsoft Graph API, que requieren registro de app/permisos), la
-# forma más simple y confiable es apuntar esta ruta a una carpeta que YA
-# esté dentro de tu OneDrive sincronizado en este equipo/servidor:
-#   Windows:    REPORTES_DIR = r"C:\Users\TU_USUARIO\OneDrive\Auditoria\Visitas"
-#   Linux/macOS (con OneDrive vía rclone o cliente "onedrive"):
-#               REPORTES_DIR = "/home/tu_usuario/OneDrive/Auditoria/Visitas"
-# También puedes definir la variable de entorno VISITA_APP_REPORTES_DIR
-# al desplegar la app, sin tocar el código.
-REPORTES_DIR = r"C:\Users\vherrera\OneDrive - cajaarequipa.pe\MIS DOCUMENTOA\reportes"
 
-for _d in (DATA_DIR, DRAFTS_DIR, FOTOS_DIR, REPORTES_DIR):
-    os.makedirs(_d, exist_ok=True)
+def badge(texto, clase):
+    st.markdown(f'<span class="badge {clase}">{texto}</span>', unsafe_allow_html=True)
 
-EXCEL_SHEET_NAME = "MUESTRA_FINAL"
 
-EXCEL_COLUMNS = [
-    "RECNO", "PEPAIS", "PETDOC", "DOCPEN", "CODCLI", "BCEMP", "BCSUC", "BCMDA",
-    "BCPAP", "BCCTA", "BCOPER", "BCSBOP", "BCTOP", "BCMOD", "CODCRE", "REGION",
-    "ZONA", "AGENCIA", "CLIENTE", "DIRECCION_DOM", "DISTRITO_DOM",
-    "PROVINCIA_DOM", "DEPARTAMENTO_DOM", "DIRECCION_NEG", "DISTRITO_NEG",
-    "PROVINCIA_NEG", "DEPARTAMENTO_NEG", "ACTIVIDAD_ECON", "ANALISTA",
-    "PRODUCTO_CAJA", "SALDO_MN", "SALDO_VIGE", "SALDO_REFI", "SALDO_VENC",
-    "SALDO_JUDI", "MORA_CONT", "TIPO_SBS", "FECDES", "IMPDESEMB_MN",
-    "COD_MODULO", "MODULO", "COD_TIPO_OPERACION", "TIPO_OPERACION",
-    "ANALISTA_EVAL", "USUARIO_APROB", "USUARIO_DESEM", "FECHA_EVAL",
-    "DIAS_ATRASO", "ESTADO_CREDITO", "ATRANT_1M", "ATRANT_2M", "ATRANT_3M",
-    "ATRANT_4M", "ATRANT_5M", "ATRANT_6M", "TIPO_SOLI", "NUMERO_CUOTAS",
-    "CUOTAS_PAGADAS", "TIPO", "SEGMENTACION_MYPE", "CATEG_RESULTANTE",
-    "CATEG_RESULTANTE_SINALIN", "CUENTA_AVAL", "FECHA_UTLPAGO", "UAI_IND",
-    "ESTRATO", "TIPO_EXPEDIENTE",
-]
-
-CLIENTE_VISITADO_OPCIONES = [
-    "1. Cliente con actividad laboral y/o económica vigente",
-    "2. Cliente con situación desmejorada",
-    "3. Cliente ya no labora y/o no realiza la actividad económica",
-    "4. Cliente no ubicado",
-]
-
-CRITERIOS_DEF = {
-    "Indicio de dolo o fraude en la evaluación de créditos": [
-        "Documentos con enmendaduras",
-        "Documentos con datos inconsistentes",
-        "Documentos sin datos del cliente",
-        "Documentos sin firmas o que no coinciden",
-        "Documentos duplicados en más de un cliente",
-    ],
-    "Evaluaciones deficientes o con sustento insuficiente": [
-        "No se evidenció sustento de actividad económica",
-        "No se evidenció sustento de ingresos",
-        "No se evidenció sustento de activos representativos",
-        "Se omitió al cónyuge",
-    ],
-    "Créditos reprogramados y refinanciados": [
-        "Reprogramado",
-        "Refinanciado",
-    ],
-    "Clientes con créditos con calificación diferente a normal a la fecha de revisión": [
-        "Calificación diferente a normal",
-    ],
+PASOS = ["busqueda", "evaluacion", "ficha", "ubicacion", "reporte"]
+PASOS_LABEL = {
+    "busqueda": ("🔍", "Buscar"),
+    "evaluacion": ("⚠️", "Criterio"),
+    "ficha": ("👤", "Cliente"),
+    "ubicacion": ("📍", "Visita"),
+    "reporte": ("📄", "Reporte"),
 }
 
 
-# --------------------------------------------------------------------------
-# ESTILOS
-# --------------------------------------------------------------------------
-def load_css(path):
-    """Inyecta un archivo CSS dentro de la app de Streamlit."""
-    full_path = os.path.join(BASE_DIR, path) if not os.path.isabs(path) else path
-    try:
-        with open(full_path, "r", encoding="utf-8") as f:
-            css = f.read()
-        st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
-    except FileNotFoundError:
-        st.warning(f"No se encontró el archivo de estilos: {full_path}")
+def top_menu():
+    """Submenú superior por íconos, en una sola línea, para moverse entre
+    las vistas (reemplaza la barra inferior). Incluye también el acceso
+    al Resumen/Consolidado por agencia, disponible desde que hay datos
+    cargados (aunque todavía no se haya abierto un cliente)."""
+    st.markdown('<div class="top-menu-spacer"></div>', unsafe_allow_html=True)
+    pasos_visibles = list(PASOS) if st.session_state.cliente_actual is not None else ["busqueda"]
+    mostrar_consolidado = st.session_state.df is not None
+    n = len(pasos_visibles) + (1 if mostrar_consolidado else 0)
+    cols = st.columns(n)
+    for i, paso in enumerate(pasos_visibles):
+        icono, label = PASOS_LABEL[paso]
+        activo = " ✅" if st.session_state.view == paso else ""
+        if cols[i].button(f"{icono} {label}", key=f"nav_{paso}", use_container_width=True,
+                           help=f"Ir a {label}", type="primary" if st.session_state.view == paso else "secondary"):
+            st.session_state.view = paso
+            st.rerun()
+    if mostrar_consolidado:
+        if cols[-1].button("📊 Resumen", key="nav_consolidado", use_container_width=True,
+                            help="Reporte consolidado por agencia y cliente",
+                            type="primary" if st.session_state.view == "consolidado" else "secondary"):
+            st.session_state.view = "consolidado"
+            st.rerun()
+
+
+def ir_a(paso):
+    st.session_state.view = paso
+    st.rerun()
+
+
+def cliente():
+    return st.session_state.cliente_actual or {}
+
+
+def guardar_avance():
+    c = cliente()
+    if c:
+        guardar_borrador(st.session_state.usuario, safe_str(c.get("DOCPEN")), c)
 
 
 # --------------------------------------------------------------------------
-# HELPERS DE DATOS
+# PANTALLA 1 — BÚSQUEDA Y CARGA
 # --------------------------------------------------------------------------
-def safe_str(v, default=""):
-    if v is None:
-        return default
-    try:
-        if pd.isna(v):
-            return default
-    except Exception:
-        pass
-    s = str(v).strip()
-    return default if s.lower() in ("nan", "none") else s
+def pantalla_busqueda():
+    header("🏦", "Buscar Cliente", "Carga tu base y busca por DNI o cuenta")
 
+    with st.container(border=True):
+        usuario = st.text_input(
+            "Tu nombre / usuario (para guardar tu progreso e historial)",
+            value=st.session_state.usuario, key="input_usuario",
+            placeholder="Ej: ACEJ",
+        )
+        st.session_state.usuario = usuario.strip()
 
-def safe_float(v, default=0.0):
-    try:
-        f = float(str(v).replace(",", "").strip())
-        if pd.isna(f):
-            return default
-        return f
-    except Exception:
-        return default
-
-
-def fmt_money(v):
-    return f"S/ {safe_float(v):,.2f}"
-
-
-def slug(texto):
-    """Convierte un texto en algo seguro para usar como nombre de archivo
-    o clave de widget, quitando tildes correctamente en vez de dejarlas
-    como guiones bajos sueltos (ej. 'Pérez' -> 'Perez', no 'P_rez')."""
-    import unicodedata
-    texto = safe_str(texto, "sin_dato")
-    texto = unicodedata.normalize("NFKD", texto)
-    texto = "".join(c for c in texto if not unicodedata.combining(c))
-    texto = re.sub(r"[^A-Za-z0-9_\-]+", "_", texto)
-    texto = re.sub(r"_+", "_", texto)
-    return texto.strip("_") or "sin_dato"
-
-
-# --------------------------------------------------------------------------
-# LECTURA DEL EXCEL (hoja MUESTRA_FINAL) — con caché para que cargue rápido
-# tanto en PC como en celular (el procesamiento ocurre en el servidor, no
-# en el dispositivo, así que cachear el resultado evita reprocesar el
-# archivo en cada clic).
-# --------------------------------------------------------------------------
-@st.cache_data(show_spinner="Procesando archivo Excel...")
-def cargar_excel(file_bytes: bytes):
-    bio = io.BytesIO(file_bytes)
-    hoja_usada = EXCEL_SHEET_NAME
-    try:
-        df = pd.read_excel(bio, sheet_name=EXCEL_SHEET_NAME, dtype=str)
-    except ValueError:
-        bio.seek(0)
-        xls = pd.ExcelFile(bio)
-        hoja_usada = xls.sheet_names[0]
-        df = pd.read_excel(bio, sheet_name=hoja_usada, dtype=str)
-
-    df.columns = [str(c).strip().upper() for c in df.columns]
-    # Compatibilidad con archivos antiguos que usaban "PENDOC" en vez de "DOCPEN"
-    if "PENDOC" in df.columns and "DOCPEN" not in df.columns:
-        df = df.rename(columns={"PENDOC": "DOCPEN"})
-    df = df.fillna("")
-    faltantes = [c for c in EXCEL_COLUMNS if c not in df.columns]
-    return df, hoja_usada, faltantes
-
-
-# --------------------------------------------------------------------------
-# AUTOGUARDADO / RECUPERACIÓN DE AVANCE
-# --------------------------------------------------------------------------
-INGRESOS_KEYS = [
-    "ingreso_principal", "otros_ingresos",
-    "op_alquiler", "op_servicios", "op_transporte", "op_mercaderia", "op_publicidad", "op_otros",
-    "fam_alimentacion", "fam_vivienda", "fam_servicios", "fam_educacion", "fam_salud", "fam_otros",
-]
-
-
-def _draft_path(usuario, dni):
-    return os.path.join(DRAFTS_DIR, f"{slug(usuario)}__{slug(dni)}.json")
-
-
-def hay_borrador(usuario, dni):
-    return os.path.exists(_draft_path(usuario, dni))
-
-
-def guardar_borrador(usuario, dni, cliente_actual):
-    """Guarda el avance actual de la sesión a disco (foto incluida).
-
-    Los checkboxes de criterios y los montos de ingresos/gastos se guardan
-    "planos" (mismas claves que usan sus widgets) para poder restaurarlos
-    directamente en session_state antes de que esos widgets se vuelvan a
-    dibujar — así Streamlit los muestra ya marcados/llenados al recuperar.
-    """
-    if not usuario or not dni:
+    if not st.session_state.usuario:
+        st.info("Escribe tu nombre de usuario para continuar.")
         return
-    data = {"cliente_actual": cliente_actual, "guardado_en": ahora_peru().isoformat()}
 
-    data["criterios"] = {k: v for k, v in st.session_state.items() if k.startswith("chk_")}
-    data["calif_revision"] = st.session_state.get("calif_revision", "")
-    data["ingresos_gastos"] = {k: st.session_state.get(k, 0.0) for k in INGRESOS_KEYS}
-    data["garantias"] = st.session_state.get("garantias", [])
-    data["rcc"] = st.session_state.get("rcc", [])
-    data["cliente_visitado"] = st.session_state.get("cliente_visitado", "")
+    with st.container(border=True):
+        st.markdown("**📂 Carga de Base de Datos**")
+        st.caption("Sube el Excel con la hoja 'MUESTRA_FINAL'. Formatos: .xlsx, .xls")
+        archivo = st.file_uploader("Seleccionar archivo Excel", type=["xlsx", "xls"], label_visibility="collapsed")
+        if archivo is not None:
+            df, hoja_usada, faltantes = cargar_excel(archivo.getvalue())
+            st.session_state.df = df
+            st.session_state.hoja_usada = hoja_usada
+            st.success(f"✅ {len(df)} registros cargados desde la hoja **{hoja_usada}**")
+            if hoja_usada != "MUESTRA_FINAL":
+                st.warning("No se encontró la hoja 'MUESTRA_FINAL'; se usó la primera hoja del archivo.")
+            if faltantes:
+                st.caption(
+                    "Columnas no encontradas (quedarán vacías): "
+                    + ", ".join(faltantes[:8]) + ("..." if len(faltantes) > 8 else "")
+                )
 
-    visitas_serializables = {}
-    for clave, v in st.session_state.get("visitas", {}).items():
-        v = dict(v)
-        foto_bytes = v.pop("foto_bytes", None)
-        if foto_bytes:
-            foto_path = os.path.join(FOTOS_DIR, f"{slug(usuario)}__{slug(dni)}__{clave}.jpg")
-            with open(foto_path, "wb") as f:
-                f.write(foto_bytes)
-            v["foto_path"] = foto_path
-        visitas_serializables[clave] = v
-    data["visitas"] = visitas_serializables
+    df = st.session_state.df
+    if df is None:
+        st.info("Sube el archivo Excel para poder buscar clientes.")
+        return
 
-    with open(_draft_path(usuario, dni), "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, default=str)
+    with st.container(border=True):
+        st.markdown("**🔎 Búsqueda Inteligente**")
+        st.caption("Busca por DNI o número de cuenta (también acepta el nombre)")
+        busqueda = st.text_input("Buscar", placeholder="DNI, N° de cuenta o nombre", label_visibility="collapsed")
 
+    if busqueda:
+        b = busqueda.strip().lower()
+        mask = (
+            df.get("DOCPEN", pd.Series("", index=df.index)).astype(str).str.contains(b, case=False, na=False)
+            | df.get("BCCTA", pd.Series("", index=df.index)).astype(str).str.contains(b, case=False, na=False)
+            | df.get("CLIENTE", pd.Series("", index=df.index)).astype(str).str.contains(b, case=False, na=False)
+        )
+        resultados = df[mask].head(8)
 
-def cargar_borrador(usuario, dni):
-    """Carga un avance guardado previamente de vuelta a session_state."""
-    path = _draft_path(usuario, dni)
-    if not os.path.exists(path):
-        return False
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    for k, v in data.get("criterios", {}).items():
-        st.session_state[k] = v
-    st.session_state["calif_revision"] = data.get("calif_revision", "")
-
-    for k, v in data.get("ingresos_gastos", {}).items():
-        st.session_state[k] = v
-
-    st.session_state["garantias"] = data.get("garantias", [])
-    st.session_state["rcc"] = data.get("rcc", [])
-    st.session_state["cliente_visitado"] = data.get("cliente_visitado", "")
-
-    visitas = data.get("visitas", {})
-    for clave, v in visitas.items():
-        foto_path = v.pop("foto_path", None)
-        if foto_path and os.path.exists(foto_path):
-            with open(foto_path, "rb") as imgf:
-                v["foto_bytes"] = imgf.read()
-    st.session_state["visitas"] = visitas
-    return True
+        if len(resultados) == 0:
+            st.warning("No se encontraron coincidencias.")
+        else:
+            for idx, row in resultados.iterrows():
+                with st.container(border=True):
+                    c1, c2 = st.columns([3, 1])
+                    with c1:
+                        st.markdown(f"**{safe_str(row.get('CLIENTE'))}**")
+                        st.caption(f"DNI: {safe_str(row.get('DOCPEN'))} · Cuenta: {safe_str(row.get('BCCTA'))} · Cód: {safe_str(row.get('CODCLI'))}")
+                        st.caption(f"Saldo: {fmt_money(row.get('SALDO_MN'))}")
+                    with c2:
+                        if st.button("Abrir", key=f"abrir_{idx}", use_container_width=True):
+                            seleccionar_cliente(row.to_dict())
 
 
-def borrar_borrador(usuario, dni):
-    path = _draft_path(usuario, dni)
-    if os.path.exists(path):
-        os.remove(path)
-    for clave in ("domicilio", "negocio", "aval"):
-        foto_path = os.path.join(FOTOS_DIR, f"{slug(usuario)}__{slug(dni)}__{clave}.jpg")
-        if os.path.exists(foto_path):
-            os.remove(foto_path)
-
-
-# --------------------------------------------------------------------------
-# HISTORIAL (registro de quién generó qué informe y cuándo)
-# --------------------------------------------------------------------------
-HISTORIAL_COLUMNS = [
-    "Usuario_Auditor", "Agencia", "Cliente", "DNI", "Cuenta", "Operacion",
-    "Modulo", "AnalistaVigente", "AnalistaEvaluador",
-    "N_Visita_Agencia", "N_Visita_General",
-    "ClienteVisitado", "Fecha", "Hora",
-    "TipoArchivo", "NombreArchivo", "RutaGuardado", "CriteriosSeleccionados",
-]
-
-
-def leer_historial():
-    if not os.path.exists(HISTORIAL_PATH):
-        return pd.DataFrame(columns=HISTORIAL_COLUMNS)
-    return pd.read_excel(HISTORIAL_PATH)
-
-
-def _contar_visitas_previas(agencia):
-    """Cuenta cuántas visitas ya hay registradas para una agencia dada y
-    en total, para asignar el numerador de la visita siguiente."""
-    hist = leer_historial()
-    n_general = len(hist)
-    if "Agencia" in hist.columns and agencia:
-        n_agencia = int((hist["Agencia"].astype(str).str.strip() == str(agencia).strip()).sum())
+def seleccionar_cliente(fila):
+    st.session_state.cliente_actual = fila
+    dni = safe_str(fila.get("DOCPEN"))
+    if hay_borrador(st.session_state.usuario, dni):
+        st.session_state.borrador_prompt = True
     else:
-        n_agencia = 0
-    return n_agencia, n_general
+        st.session_state.visitas = {}
+        st.session_state.garantias = []
+        st.session_state.rcc = []
+        st.session_state.cliente_visitado = ""
+        st.session_state.historial_actual = None
+        ir_a("evaluacion")
+    st.rerun()
 
 
-def registrar_historial(usuario, cliente_actual, tipo_archivo, nombre_archivo,
-                         criterios_texto, cliente_visitado="", ruta_guardado=""):
-    """Agrega una fila al historial general (data/historial_visitas.xlsx).
-
-    Calcula automáticamente N_Visita_Agencia (numerador dentro de esa
-    agencia) y N_Visita_General (numerador global, todas las agencias).
-    """
-    import openpyxl
-
-    agencia = safe_str(cliente_actual.get("AGENCIA"))
-    n_agencia_prev, n_general_prev = _contar_visitas_previas(agencia)
-
-    ahora = ahora_peru()
-    fila = [
-        usuario, agencia,
-        safe_str(cliente_actual.get("CLIENTE")),
-        safe_str(cliente_actual.get("DOCPEN")),
-        safe_str(cliente_actual.get("BCCTA")),
-        safe_str(cliente_actual.get("BCOPER")),
-        safe_str(cliente_actual.get("MODULO")),
-        safe_str(cliente_actual.get("ANALISTA")),
-        safe_str(cliente_actual.get("ANALISTA_EVAL")),
-        n_agencia_prev + 1, n_general_prev + 1,
-        cliente_visitado,
-        ahora.strftime("%d/%m/%Y"), ahora.strftime("%H:%M:%S"),
-        tipo_archivo, nombre_archivo, ruta_guardado, criterios_texto,
-    ]
-    if os.path.exists(HISTORIAL_PATH):
-        wb = openpyxl.load_workbook(HISTORIAL_PATH)
-        ws = wb.active
-        encabezado_actual = [c.value for c in ws[1]]
-        if encabezado_actual != HISTORIAL_COLUMNS:
-            # Migra archivos de historial de una versión anterior de la app
-            # sin perder las filas ya registradas.
-            ws.delete_rows(1)
-            ws.insert_rows(1)
-            for i, col in enumerate(HISTORIAL_COLUMNS, start=1):
-                ws.cell(row=1, column=i, value=col)
-    else:
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = "Historial"
-        ws.append(HISTORIAL_COLUMNS)
-    ws.append(fila)
-    wb.save(HISTORIAL_PATH)
-    return n_agencia_prev + 1, n_general_prev + 1
-
-
-def reporte_consolidado_por_agencia():
-    """Cuántos clientes distintos se visitó por agencia y cuántos
-    reportes en total, a partir de todo lo guardado en el historial."""
-    hist = leer_historial()
-    if hist.empty or "Agencia" not in hist.columns:
-        return pd.DataFrame(columns=["Agencia", "Clientes_Visitados", "Reportes_Generados", "Ultima_Visita"])
-    resumen = (
-        hist.groupby("Agencia")
-        .agg(Clientes_Visitados=("DNI", "nunique"),
-             Reportes_Generados=("NombreArchivo", "count"),
-             Ultima_Visita=("Fecha", "max"))
-        .reset_index()
-        .sort_values("Clientes_Visitados", ascending=False)
-    )
-    return resumen
-
-
-def reporte_consolidado_por_cliente(agencia=None):
-    """Detalle por cliente: cuántas visitas/reportes tiene cada uno,
-    opcionalmente filtrado por agencia."""
-    hist = leer_historial()
-    if hist.empty:
-        return pd.DataFrame(columns=["Agencia", "Cliente", "DNI", "Cuenta", "Reportes_Generados", "Ultima_Visita"])
-    if agencia and "Agencia" in hist.columns:
-        hist = hist[hist["Agencia"].astype(str).str.strip() == str(agencia).strip()]
-    resumen = (
-        hist.groupby(["Agencia", "Cliente", "DNI", "Cuenta"], dropna=False)
-        .agg(Reportes_Generados=("NombreArchivo", "count"), Ultima_Visita=("Fecha", "max"))
-        .reset_index()
-        .sort_values("Reportes_Generados", ascending=False)
-    )
-    return resumen
-
-
-def generar_resumen_agencia_excel(agencia):
-    """Genera el Excel 'Resultado de visitas' por agencia, con el mismo
-    formato que usa Auditoría Interna (encabezado amarillo, columnas
-    N°/Cuenta Cliente/N° Operación/Nombre de Cliente/Módulo/Analista
-    Vigente/Analista Evaluador/Resultado de la visita/Cliente visitado,
-    y un resumen final con el conteo por tipo de resultado)."""
-    import openpyxl
-    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-
-    hist = leer_historial()
-    if not hist.empty and "Agencia" in hist.columns and agencia:
-        hist = hist[hist["Agencia"].astype(str).str.strip() == str(agencia).strip()]
-
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Resultado de Visitas"
-
-    amarillo = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
-    borde = Border(*(Side(style="thin"),) * 4)
-    negrita = Font(bold=True)
-
-    ws.merge_cells("A1:I1")
-    ws["A1"] = "GERENCIA DE AUDITORÍA INTERNA"
-    ws["A1"].font = Font(bold=True, size=11)
-    ws.merge_cells("A2:I2")
-    ws["A2"] = "REF: RESULTADO DE VISITAS"
-    ws["A2"].font = Font(bold=True, size=11)
-    ws.merge_cells("A3:I3")
-    ws["A3"] = f"AGENCIA {agencia or ''}"
-    ws["A3"].font = Font(bold=True, size=11)
-
-    encabezados = ["N°", "Cuenta Cliente", "Número Operación", "Nombre de Cliente",
-                   "Módulo", "Analista Vigente", "Analista Evaluador",
-                   "Resultado de la visita", "Cliente visitado"]
-    fila_enc = 5
-    for col, titulo in enumerate(encabezados, start=1):
-        celda = ws.cell(row=fila_enc, column=col, value=titulo)
-        celda.fill = amarillo
-        celda.font = negrita
-        celda.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        celda.border = borde
-
-    conteo_resultado = {}
-    fila = fila_enc + 1
-    if not hist.empty:
-        hist_ordenado = hist.reset_index(drop=True)
-        for i, row in hist_ordenado.iterrows():
-            cliente_visitado = safe_str(row.get("ClienteVisitado"))
-            valores = [
-                i + 1,
-                safe_str(row.get("Cuenta")),
-                safe_str(row.get("Operacion")),
-                safe_str(row.get("Cliente")),
-                safe_str(row.get("Modulo")),
-                safe_str(row.get("AnalistaVigente")),
-                safe_str(row.get("AnalistaEvaluador")),
-                "SI",
-                cliente_visitado,
-            ]
-            for col, val in enumerate(valores, start=1):
-                celda = ws.cell(row=fila, column=col, value=val)
-                celda.border = borde
-                celda.alignment = Alignment(vertical="center", wrap_text=True)
-            if cliente_visitado:
-                conteo_resultado[cliente_visitado] = conteo_resultado.get(cliente_visitado, 0) + 1
-            fila += 1
-
-    fila += 1
-    ws.cell(row=fila, column=1, value="Resumen:").font = negrita
-    fila += 1
-    for opcion in CLIENTE_VISITADO_OPCIONES:
-        n = conteo_resultado.get(opcion, 0)
-        ws.cell(row=fila, column=1, value=f"{opcion} ({n})")
-        fila += 1
-
-    anchos = [5, 16, 16, 28, 22, 16, 16, 14, 30]
-    for i, ancho in enumerate(anchos, start=1):
-        ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = ancho
-
-    buf = io.BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    return buf
-
-
-def guardar_reporte_en_carpeta(nombre_archivo, contenido_bytes):
-    """Guarda una copia física del reporte en REPORTES_DIR (ver
-    definición arriba de esta carpeta — puede apuntar a una carpeta
-    sincronizada con OneDrive). Devuelve la ruta final, o "" si falló."""
-    try:
-        destino = os.path.join(REPORTES_DIR, nombre_archivo)
-        with open(destino, "wb") as f:
-            f.write(contenido_bytes)
-        return destino
-    except Exception:
-        return ""
+def prompt_borrador():
+    c = cliente()
+    with st.container(border=True):
+        st.warning(f"Encontramos un avance guardado para **{safe_str(c.get('CLIENTE'))}** con tu usuario.")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("🔄 Continuar avance", use_container_width=True):
+                cargar_borrador(st.session_state.usuario, safe_str(c.get("DOCPEN")))
+                st.session_state.historial_actual = None
+                st.session_state.borrador_prompt = False
+                ir_a("evaluacion")
+        with c2:
+            if st.button("🆕 Iniciar nuevo", use_container_width=True):
+                borrar_borrador(st.session_state.usuario, safe_str(c.get("DOCPEN")))
+                st.session_state.visitas = {}
+                st.session_state.garantias = []
+                st.session_state.rcc = []
+                st.session_state.cliente_visitado = ""
+                st.session_state.historial_actual = None
+                st.session_state.borrador_prompt = False
+                ir_a("evaluacion")
 
 
 # --------------------------------------------------------------------------
-# CÁLCULOS DE EVALUACIÓN
+# PANTALLA 2 — EVALUACIÓN DE CRÉDITO (CRITERIOS PARA LA VISITA)
 # --------------------------------------------------------------------------
-def calcular_resultado(ing):
-    total_ingresos = safe_float(ing.get("ingreso_principal")) + safe_float(ing.get("otros_ingresos"))
-    gastos_operativos = sum(safe_float(ing.get(k)) for k in [
-        "op_alquiler", "op_servicios", "op_transporte", "op_mercaderia", "op_publicidad", "op_otros",
-    ])
-    gastos_familiares = sum(safe_float(ing.get(k)) for k in [
-        "fam_alimentacion", "fam_vivienda", "fam_servicios", "fam_educacion", "fam_salud", "fam_otros",
-    ])
-    total_gastos = gastos_operativos + gastos_familiares
-    utilidad_neta = total_ingresos - total_gastos
-    margen = (utilidad_neta / total_ingresos * 100) if total_ingresos else 0.0
-    return {
-        "total_ingresos": total_ingresos,
-        "gastos_operativos": gastos_operativos,
-        "gastos_familiares": gastos_familiares,
-        "total_gastos": total_gastos,
-        "utilidad_neta": utilidad_neta,
-        "margen": margen,
-    }
+def pantalla_evaluacion():
+    c = cliente()
+    header("⚠️", "Evaluación de Crédito", f"Cliente: {safe_str(c.get('CLIENTE'))}")
+    st.caption("Marca los criterios identificados para esta visita.")
 
-
-def criterios_seleccionados_lista(criterios, calif_revision):
-    seleccionados = []
     for categoria, items in CRITERIOS_DEF.items():
-        for item in items:
-            key = f"chk_{slug(categoria)}_{slug(item)}"
-            if criterios.get(key):
-                if item == "Calificación diferente a normal" and calif_revision:
-                    seleccionados.append(f"{item} ({calif_revision})")
-                else:
-                    seleccionados.append(item)
-    return seleccionados
+        keys = [f"chk_{slug(categoria)}_{slug(item)}" for item in items]
+        activo = any(st.session_state.get(k, False) for k in keys)
+        icono = "🔴" if activo else "⚪"
+        with st.container(border=True):
+            with st.expander(f"{icono} {categoria}", expanded=activo):
+                for item, key in zip(items, keys):
+                    st.checkbox(item, key=key)
+                    if item == "Calificación diferente a normal" and st.session_state.get(key):
+                        st.text_input("Indicar la calificación a la fecha de revisión", key="calif_revision")
 
-
-# --------------------------------------------------------------------------
-# GENERACIÓN DE REPORTE — WORD
-# --------------------------------------------------------------------------
-def generar_word(cliente, criterios_txt, ingresos_calc, ingresos_raw, visitas, garantias, rcc, usuario, cliente_visitado=""):
-    from docx import Document
-    from docx.shared import Cm, Pt, RGBColor
-    from docx.enum.text import WD_ALIGN_PARAGRAPH
-
-    AZUL = "1B3A5C"
-
-    def add_heading(doc, text, size=13):
-        p = doc.add_paragraph()
-        run = p.add_run(text)
-        run.bold = True
-        run.font.size = Pt(size)
-        run.font.color.rgb = RGBColor.from_string(AZUL)
-        return p
-
-    def add_kv_table(doc, pairs, cols=2):
-        table = doc.add_table(rows=0, cols=cols * 2)
-        table.style = "Light Grid Accent 1"
-        row = None
-        for i, (k, v) in enumerate(pairs):
-            if i % cols == 0:
-                row = table.add_row().cells
-            c = (i % cols) * 2
-            row[c].text = str(k)
-            row[c + 1].text = str(v) if v not in (None, "") else "-"
-        return table
-
-    doc = Document()
-    titulo = doc.add_heading("VISITA A CLIENTES", 0)
-    p = doc.add_paragraph("CMAC Caja Arequipa — Unidad de Auditoría Interna")
-    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    doc.add_paragraph(f"Auditor: {usuario}  ·  Fecha de visita: {ahora_peru().strftime('%d/%m/%Y %H:%M')} (hora Perú)")
-
-    if criterios_txt:
-        add_heading(doc, "0. Criterio para la visita")
-        for c in criterios_txt:
-            doc.add_paragraph("• " + c)
-
-    add_heading(doc, "I. Datos del cliente y crédito")
-    add_kv_table(doc, [
-        ("Agencia", safe_str(cliente.get("AGENCIA"))),
-        ("DNI/LE Titular", safe_str(cliente.get("DOCPEN"))),
-        ("Titular", safe_str(cliente.get("CLIENTE"))),
-        ("Cuenta cliente", safe_str(cliente.get("BCCTA"))),
-        ("N° de operación", safe_str(cliente.get("BCOPER"))),
-        ("Módulo", safe_str(cliente.get("MODULO"))),
-        ("Analista vigente", safe_str(cliente.get("ANALISTA"))),
-        ("Analista evaluador", safe_str(cliente.get("ANALISTA_EVAL"))),
-        ("Auditor (visita)", usuario),
-        ("Importe", fmt_money(cliente.get("IMPDESEMB_MN"))),
-        ("Saldo capital", fmt_money(cliente.get("SALDO_MN"))),
-        ("Tipo de crédito", safe_str(cliente.get("PRODUCTO_CAJA"))),
-        ("Tipo SBS", safe_str(cliente.get("TIPO_SBS"))),
-        ("Calificación", safe_str(cliente.get("CATEG_RESULTANTE"))),
-        ("Rubro", safe_str(cliente.get("ACTIVIDAD_ECON"))),
-        ("Último pago", safe_str(cliente.get("FECHA_UTLPAGO"))),
-        ("Resultado de la visita / Cliente visitado", cliente_visitado or "-"),
-    ])
-
-    for clave, titulo in [("negocio", "II. Visita al negocio (dirección del negocio)"),
-                           ("laboral", "III. Visita al centro laboral"),
-                           ("aval", "IV. Visita al aval"),
-                           ("domicilio", "V. Visita al domicilio")]:
-        d = visitas.get(clave)
-        add_heading(doc, titulo)
-        if d:
-            add_kv_table(doc, [
-                ("Dirección", d.get("direccion", "-")),
-                ("Distrito", d.get("distrito", "-")),
-                ("Provincia", d.get("provincia", "-")),
-                ("Departamento", d.get("departamento", "-")),
-                ("Referencia", d.get("referencia", "-")),
-                ("Fecha de visita", d.get("fecha", "-")),
-                ("Hora de visita", d.get("hora", "-")),
-                ("Entrevista con", d.get("entrevista_con", "-")),
-                ("Comentarios", d.get("comentarios", "-")),
-                ("GPS", f"{d.get('lat')}, {d.get('lon')}" if d.get("lat") else "No capturada"),
-            ])
-            if d.get("foto_bytes"):
-                doc.add_picture(io.BytesIO(d["foto_bytes"]), width=Cm(8))
-        else:
-            doc.add_paragraph("⚠ No se registró visita de verificación para esta sección.")
-
-    if garantias:
-        add_heading(doc, "VI. Garantías")
-        for g in garantias:
-            add_kv_table(doc, list(g.items()))
-
-    if rcc:
-        add_heading(doc, "VII. Deuda RCC")
-        for r in rcc:
-            add_kv_table(doc, list(r.items()))
-
-    add_heading(doc, "Conformidad")
-    add_kv_table(doc, [
-        ("Hecho por (Auditor)", usuario), ("Fecha", ahora_peru().strftime("%d/%m/%Y")),
-        ("Revisado por", ""), ("Fecha", ""),
-    ])
-
-    buf = io.BytesIO()
-    doc.save(buf)
-    buf.seek(0)
-    return buf
-
-
-# --------------------------------------------------------------------------
-# GENERACIÓN DE REPORTE — PDF (independiente de Word, usando reportlab)
-# --------------------------------------------------------------------------
-def generar_pdf(cliente, criterios_txt, ingresos_calc, ingresos_raw, visitas, garantias, rcc, usuario, cliente_visitado=""):
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.units import cm
-    from reportlab.lib import colors
-    from reportlab.platypus import (
-        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage,
+    n_marcados = sum(
+        1 for cat, items in CRITERIOS_DEF.items() for item in items
+        if st.session_state.get(f"chk_{slug(cat)}_{slug(item)}", False)
     )
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    if n_marcados:
+        badge(f"⚠️ {n_marcados} criterio(s) marcado(s)", "badge-pend")
+    else:
+        badge("Sin criterios de riesgo marcados", "badge-ok")
 
-    AZUL = colors.HexColor("#1B3A5C")
-    ROJO = colors.HexColor("#C8102E")
+    st.write("")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("⬅️ Volver a buscar", use_container_width=True):
+            ir_a("busqueda")
+    with c2:
+        if st.button("Guardar y continuar ➡️", use_container_width=True, type="primary"):
+            guardar_avance()
+            ir_a("ficha")
 
-    buf = io.BytesIO()
-    docpdf = SimpleDocTemplate(buf, pagesize=A4, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
-    styles = getSampleStyleSheet()
-    h1 = ParagraphStyle("h1c", parent=styles["Heading1"], textColor=AZUL, fontSize=15)
-    h2 = ParagraphStyle("h2c", parent=styles["Heading2"], textColor=AZUL, fontSize=12, spaceBefore=10)
-    normal = styles["Normal"]
 
-    elems = [
-        Paragraph("VISITA A CLIENTES", h1),
-        Paragraph("CMAC Caja Arequipa — Unidad de Auditoría Interna", normal),
-        Paragraph(f"Auditor: {usuario} · Fecha de visita: {ahora_peru().strftime('%d/%m/%Y %H:%M')} (hora Perú)", normal),
-        Spacer(1, 10),
-    ]
+# --------------------------------------------------------------------------
+# PANTALLA 3 — FICHA DEL CLIENTE
+# --------------------------------------------------------------------------
+def pantalla_ficha():
+    c = cliente()
+    header("👤", "Cliente y Crédito", "Ficha de identidad (solo lectura)")
 
-    def tabla_kv(pairs):
-        data = [[k, str(v) if v not in (None, "") else "-"] for k, v in pairs]
-        t = Table(data, colWidths=[6 * cm, 9 * cm])
-        t.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#f0f0f3")),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cccccc")),
-            ("FONTSIZE", (0, 0), (-1, -1), 9),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 6),
-        ]))
-        return t
+    st.markdown(
+        f"""<div class="banner-cliente">
+                <div class="nombre">{safe_str(c.get('CLIENTE'))}</div>
+                <div class="dni">DNI: {safe_str(c.get('DOCPEN'))} · Cuenta: {safe_str(c.get('BCCTA'))}</div>
+            </div>""",
+        unsafe_allow_html=True,
+    )
 
-    if criterios_txt:
-        elems.append(Paragraph("0. Criterio para la visita", h2))
-        for c in criterios_txt:
-            elems.append(Paragraph("• " + c, normal))
+    with st.container(border=True):
+        st.markdown("**Información del crédito**")
+        chips = [
+            ("N° de cuenta", safe_str(c.get("BCCTA"), "-")),
+            ("Tipo de crédito", safe_str(c.get("PRODUCTO_CAJA"), "-")),
+            ("Calificación", safe_str(c.get("CATEG_RESULTANTE"), "-")),
+            ("Importe desembolsado", fmt_money(c.get("IMPDESEMB_MN"))),
+            ("Saldo actual", fmt_money(c.get("SALDO_MN"))),
+            ("Fecha de desembolso", safe_str(c.get("FECDES"), "-")),
+            ("Último pago", safe_str(c.get("FECHA_UTLPAGO"), "-")),
+        ]
+        chips_html = "".join(
+            f'<div class="chip"><div class="lbl">{lbl}</div><div class="val">{val}</div></div>'
+            for lbl, val in chips
+        )
+        st.markdown(f'<div class="info-credito">{chips_html}</div>', unsafe_allow_html=True)
 
-    elems.append(Paragraph("I. Datos del cliente y crédito", h2))
-    elems.append(tabla_kv([
-        ("Agencia", safe_str(cliente.get("AGENCIA"))),
-        ("DNI/LE Titular", safe_str(cliente.get("DOCPEN"))),
-        ("Titular", safe_str(cliente.get("CLIENTE"))),
-        ("Cuenta cliente", safe_str(cliente.get("BCCTA"))),
-        ("N° de operación", safe_str(cliente.get("BCOPER"))),
-        ("Módulo", safe_str(cliente.get("MODULO"))),
-        ("Analista vigente", safe_str(cliente.get("ANALISTA"))),
-        ("Analista evaluador", safe_str(cliente.get("ANALISTA_EVAL"))),
-        ("Auditor (visita)", usuario),
-        ("Importe", fmt_money(cliente.get("IMPDESEMB_MN"))),
-        ("Saldo capital", fmt_money(cliente.get("SALDO_MN"))),
-        ("Tipo de crédito", safe_str(cliente.get("PRODUCTO_CAJA"))),
-        ("Calificación", safe_str(cliente.get("CATEG_RESULTANTE"))),
-        ("Resultado de la visita / Cliente visitado", cliente_visitado or "-"),
-    ]))
+        imp = safe_float(c.get("IMPDESEMB_MN"))
+        saldo = safe_float(c.get("SALDO_MN"))
+        if imp > 0:
+            usado_pct = max(0.0, min(1.0, 1 - (saldo / imp)))
+            st.progress(usado_pct, text=f"{usado_pct*100:.0f}% pagado del importe original")
 
-    for clave, titulo in [("negocio", "II. Visita al negocio (dirección del negocio)"),
-                           ("laboral", "III. Visita al centro laboral"),
-                           ("aval", "IV. Visita al aval"),
-                           ("domicilio", "V. Visita al domicilio")]:
-        d = visitas.get(clave)
-        elems.append(Paragraph(titulo, h2))
-        if d:
-            elems.append(tabla_kv([
-                ("Dirección", d.get("direccion", "-")),
-                ("Distrito", d.get("distrito", "-")),
-                ("Fecha de visita", d.get("fecha", "-")),
-                ("Hora de visita", d.get("hora", "-")),
-                ("Entrevista con", d.get("entrevista_con", "-")),
-                ("Comentarios", d.get("comentarios", "-")),
-                ("GPS", f"{d.get('lat')}, {d.get('lon')}" if d.get("lat") else "No capturada"),
-            ]))
-            if d.get("foto_bytes"):
-                try:
-                    img = RLImage(io.BytesIO(d["foto_bytes"]), width=8 * cm, height=6 * cm)
-                    elems.append(img)
-                except Exception:
-                    pass
+    with st.expander("ℹ️ Información adicional"):
+        info = [
+            ("Agencia", c.get("AGENCIA")), ("Analista vigente", c.get("ANALISTA")),
+            ("Analista evaluador", c.get("ANALISTA_EVAL")), ("Tipo SBS", c.get("TIPO_SBS")),
+            ("Actividad", c.get("ACTIVIDAD_ECON")), ("Segmentación MYPE", c.get("SEGMENTACION_MYPE")),
+            ("Cuenta aval", c.get("CUENTA_AVAL")), ("Estado del crédito", c.get("ESTADO_CREDITO")),
+        ]
+        for label, val in info:
+            st.write(f"**{label}:** {safe_str(val, '-')}")
+
+    st.write("")
+    st.markdown('<div class="nav-pie">', unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("⬅️ Criterio", use_container_width=True):
+            ir_a("evaluacion")
+    with c2:
+        if st.button("Ir a la visita ➡️", use_container_width=True, type="primary"):
+            guardar_avance()
+            ir_a("ubicacion")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+# --------------------------------------------------------------------------
+# (Se eliminó la pantalla de "Ingresos y Gastos" / evaluación de crédito
+#  detallada a pedido — esa vista ya no se muestra en la app. Los cálculos
+#  de utilidad neta quedan en 0 por defecto en el reporte si no se usan.)
+# --------------------------------------------------------------------------
+
+
+# --------------------------------------------------------------------------
+# PANTALLA 5 — UBICACIÓN (VISITA: DOMICILIO / NEGOCIO / AVAL)
+# --------------------------------------------------------------------------
+TIPOS_VISITA = {
+    "negocio": ("💼", "Negocio", "DIRECCION_NEG", "DISTRITO_NEG", "PROVINCIA_NEG", "DEPARTAMENTO_NEG", True),
+    "laboral": ("🏢", "Centro laboral", None, None, None, None, False),
+    "aval": ("🧾", "Aval", None, None, None, None, False),
+    "domicilio": ("🏠", "Domicilio", "DIRECCION_DOM", "DISTRITO_DOM", "PROVINCIA_DOM", "DEPARTAMENTO_DOM", False),
+}
+
+
+def pantalla_ubicacion():
+    c = cliente()
+    header("📍", "Nueva Visita", "Verificación: negocio (obligatorio), laboral, aval y domicilio (opcionales)")
+
+    tabs = st.tabs([f"{TIPOS_VISITA[t][0]} {TIPOS_VISITA[t][1]}" for t in TIPOS_VISITA])
+    for tab, clave in zip(tabs, TIPOS_VISITA):
+        with tab:
+            render_visita(clave, c)
+
+    st.write("")
+    st.markdown('<div class="nav-pie">', unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("⬅️ Cliente", use_container_width=True, key="back_ubic"):
+            ir_a("ficha")
+    with c2:
+        if st.button("Ir al reporte ➡️", use_container_width=True, type="primary", key="next_ubic"):
+            guardar_avance()
+            ir_a("reporte")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+def render_visita(clave, c):
+    icono, etiqueta, k_dir, k_dist, k_prov, k_depto, obligatoria = TIPOS_VISITA[clave]
+    visitas = st.session_state.visitas
+    data = visitas.get(clave, {})
+
+    with st.container(border=True):
+        st.markdown("**Paso 1 · Datos del lugar**")
+        valor_dir = data.get("direccion") or (safe_str(c.get(k_dir)) if k_dir else "")
+        direccion = st.text_input("Dirección", value=valor_dir, key=f"dir_{clave}")
+        cc1, cc2 = st.columns(2)
+        with cc1:
+            valor_dist = data.get("distrito") or (safe_str(c.get(k_dist)) if k_dist else "")
+            distrito = st.text_input("Distrito", value=valor_dist, key=f"dist_{clave}")
+            valor_prov = data.get("provincia") or (safe_str(c.get(k_prov)) if k_prov else "")
+            provincia = st.text_input("Provincia", value=valor_prov, key=f"prov_{clave}")
+        with cc2:
+            valor_depto = data.get("departamento") or (safe_str(c.get(k_depto)) if k_depto else "")
+            departamento = st.text_input("Departamento", value=valor_depto, key=f"depto_{clave}")
+            referencia = st.text_input("Referencia", value=data.get("referencia", ""), key=f"ref_{clave}")
+
+        st.markdown("**Paso 2 · Observaciones**")
+        ahora = ahora_peru()
+        fecha_v = st.date_input("Fecha de visita", value=ahora.date(), key=f"fecha_{clave}")
+        hora_v = st.time_input("Hora de visita", value=ahora.time(), key=f"hora_{clave}")
+        entrevista_con = st.text_input("Visita con", value=data.get("entrevista_con", ""), key=f"entrevista_{clave}")
+        comentarios = st.text_area("Comentarios", value=data.get("comentarios", ""), key=f"comentarios_{clave}")
+
+        st.markdown("**Paso 3 · Cliente visitado** — resultado de esta sección")
+        idx_actual = (
+            CLIENTE_VISITADO_OPCIONES.index(st.session_state.cliente_visitado)
+            if st.session_state.cliente_visitado in CLIENTE_VISITADO_OPCIONES else 0
+        )
+        seleccion = st.selectbox(
+            "Selecciona una opción", CLIENTE_VISITADO_OPCIONES, index=idx_actual,
+            key=f"sel_cliente_visitado_{clave}", label_visibility="collapsed",
+        )
+        st.session_state.cliente_visitado = seleccion
+
+        etiqueta_foto = "Foto con ubicación (obligatoria)" if obligatoria else "Foto con ubicación (opcional)"
+        st.markdown(f"**Paso 4 · {etiqueta_foto}**")
+        st.caption("Al tomar o subir la foto se captura automáticamente la geolocalización (GPS).")
+        foto_camara = st.camera_input("Tomar foto ahora", key=f"camara_{clave}")
+        foto_archivo = st.file_uploader("...o subir desde galería", type=["jpg", "jpeg", "png"], key=f"upload_{clave}")
+        foto_final = foto_camara if foto_camara is not None else foto_archivo
+        if foto_final is None and data.get("foto_bytes"):
+            st.image(data["foto_bytes"], caption="Foto guardada previamente", width=200)
+        if obligatoria and foto_final is None and not data.get("foto_bytes"):
+            st.warning("⚠ Esta sección requiere foto de verificación antes de guardar.")
+
+        lat, lon, precision = data.get("lat"), data.get("lon"), data.get("precision")
+        if foto_final is not None and lat is None:
+            try:
+                from streamlit_js_eval import get_geolocation
+                loc = get_geolocation(key=f"geo_{clave}")
+                if loc and "coords" in loc:
+                    lat = loc["coords"]["latitude"]
+                    lon = loc["coords"]["longitude"]
+                    precision = loc["coords"].get("accuracy")
+                else:
+                    st.warning("No se pudo obtener la ubicación todavía. Acepta el permiso de ubicación en el navegador; se reintentará automáticamente.")
+            except Exception:
+                st.warning("Geolocalización no disponible en este entorno. Ingresa la dirección manualmente.")
+
+        st.markdown("**Paso 5 · Ubicación**")
+        if lat and lon:
+            st.success(f"Lat: {lat:.6f} · Lon: {lon:.6f}" + (f" (±{precision:.0f} m)" if precision else ""))
+            st.map(pd.DataFrame({"lat": [lat], "lon": [lon]}), zoom=15, height=160)
         else:
-            elems.append(Paragraph("No se registró visita de verificación para esta sección.", normal))
-        elems.append(Spacer(1, 6))
+            st.caption("Sin ubicación capturada todavía. Se obtiene automáticamente al tomar o subir la foto del Paso 4.")
 
-    if garantias:
-        elems.append(Paragraph("VI. Garantías", h2))
-        for g in garantias:
-            elems.append(tabla_kv(list(g.items())))
+        puede_guardar = (not obligatoria) or foto_final is not None or bool(data.get("foto_bytes"))
+        if st.button(f"💾 Guardar visita de {etiqueta}", key=f"guardar_{clave}", use_container_width=True,
+                     type="primary", disabled=not puede_guardar):
+            st.session_state.visitas[clave] = {
+                "direccion": direccion, "distrito": distrito, "provincia": provincia,
+                "departamento": departamento, "referencia": referencia,
+                "fecha": str(fecha_v), "hora": str(hora_v),
+                "entrevista_con": entrevista_con, "comentarios": comentarios,
+                "lat": lat, "lon": lon, "precision": precision,
+                "foto_bytes": foto_final.getvalue() if foto_final is not None else data.get("foto_bytes"),
+            }
+            guardar_avance()
+            st.success(f"✅ Visita de {etiqueta} guardada — {fecha_v} {hora_v} (hora Perú)")
+        if not puede_guardar:
+            st.caption("Toma o sube la foto obligatoria del negocio para poder guardar esta sección.")
 
-    if rcc:
-        elems.append(Paragraph("VII. Deuda RCC", h2))
-        for r in rcc:
-            elems.append(tabla_kv(list(r.items())))
+        if clave in visitas:
+            badge("Registrada", "badge-ok")
+        else:
+            badge("Pendiente", "badge-pend")
 
-    elems.append(Paragraph("Conformidad", h2))
-    elems.append(tabla_kv([
-        ("Hecho por (Auditor)", usuario),
-        ("Fecha", ahora_peru().strftime("%d/%m/%Y")),
-    ]))
 
-    docpdf.build(elems)
-    buf.seek(0)
-    return buf
+# --------------------------------------------------------------------------
+# PANTALLA 6 — GENERACIÓN DE REPORTE
+# --------------------------------------------------------------------------
+def pantalla_reporte():
+    c = cliente()
+    header("📄", "Generación de Reporte", "Revisión final y descarga del documento")
+
+    visitas = st.session_state.visitas
+    secciones = [("negocio", "Negocio", True), ("laboral", "Laboral", False),
+                 ("aval", "Aval", False), ("domicilio", "Domicilio", False)]
+    completas = sum(1 for k, _, _ in secciones if k in visitas)
+
+    with st.container(border=True):
+        st.markdown(f"**Resumen de calidad** — {completas} de {len(secciones)} visitas registradas")
+        cols = st.columns(4)
+        for col, (clave, etiqueta, obligatoria) in zip(cols, secciones):
+            ok = clave in visitas
+            badge_clase = "badge-ok" if ok else ("badge-pend" if obligatoria else "badge-warn")
+            texto = "Foto capturada" if ok else ("Falta (obligatoria)" if obligatoria else "Opcional")
+            col.markdown(
+                f"""<div style="text-align:center;padding:0.5rem 0.2rem;border-radius:10px;background:{'#F0FDF4' if ok else '#FEF2F2'};">
+                        <div style="font-size:1.3rem;">{'✅' if ok else ('⚠️' if obligatoria else '➖')}</div>
+                        <div style="font-weight:700;font-size:0.8rem;">{etiqueta}</div>
+                        <span class="badge {badge_clase}" style="font-size:0.65rem;">{texto}</span>
+                    </div>""",
+                unsafe_allow_html=True,
+            )
+
+    if "negocio" not in visitas:
+        st.warning("Acción requerida — falta la visita obligatoria al **Negocio**. Puedes generar el reporte igual; quedará indicado como pendiente.")
+
+    criterios_dict = {k: v for k, v in st.session_state.items() if k.startswith("chk_")}
+    criterios_txt = criterios_seleccionados_lista(criterios_dict, st.session_state.get("calif_revision", ""))
+    ing = {k: st.session_state.get(k, 0.0) for k in [
+        "ingreso_principal", "otros_ingresos", "op_alquiler", "op_servicios", "op_transporte",
+        "op_mercaderia", "op_publicidad", "op_otros", "fam_alimentacion", "fam_vivienda",
+        "fam_servicios", "fam_educacion", "fam_salud", "fam_otros",
+    ]}
+    calc = calcular_resultado(ing)
+    cliente_visitado = st.session_state.get("cliente_visitado", "")
+
+    with st.container(border=True):
+        st.markdown("**Resumen de la evaluación**")
+        st.write(f"**Cuenta cliente:** {safe_str(c.get('BCCTA'))}")
+        st.write(f"**N° de operación:** {safe_str(c.get('BCOPER'))}")
+        st.write(f"**Nombre del cliente:** {safe_str(c.get('CLIENTE'))}")
+        st.write(f"**Módulo:** {safe_str(c.get('MODULO'))}")
+        st.write(f"**Analista vigente:** {safe_str(c.get('ANALISTA'))}")
+        st.write(f"**Analista evaluador:** {safe_str(c.get('ANALISTA_EVAL'))}")
+        st.write(f"**Auditor:** {st.session_state.usuario}")
+        st.write(f"**Fecha de visita:** {ahora_peru().strftime('%d/%m/%Y %H:%M')} (hora Perú)")
+        st.write(f"**Cliente visitado:** {cliente_visitado or '—'}")
+        st.write(f"**Utilidad neta:** {fmt_money(calc['utilidad_neta'])}")
+        if criterios_txt:
+            st.write(f"**Criterio seleccionado ({len(criterios_txt)}):**")
+            for ct in criterios_txt:
+                st.caption("• " + ct)
+        else:
+            st.write("**Criterio seleccionado:** —")
+
+    with st.container(border=True):
+        st.markdown("**Generar y descargar reporte**")
+        st.caption("Disponible en Word (.docx) y PDF. Un solo clic genera y descarga el archivo; se guarda automáticamente en la carpeta de reportes configurada.")
+
+        base_nombre = f"Visita_{slug(c.get('CLIENTE'))}_{ahora_peru().strftime('%Y%m%d_%H%M')}"
+        nombre_word = base_nombre + ".docx"
+        nombre_pdf = base_nombre + ".pdf"
+
+        buf_word = generar_word(c, criterios_txt, calc, ing, visitas, st.session_state.garantias,
+                                 st.session_state.rcc, st.session_state.usuario, cliente_visitado)
+        buf_pdf = generar_pdf(c, criterios_txt, calc, ing, visitas, st.session_state.garantias,
+                               st.session_state.rcc, st.session_state.usuario, cliente_visitado)
+
+        c1, c2 = st.columns(2)
+        with c1:
+            clic_word = st.download_button(
+                "📝 Generar Word", data=buf_word.getvalue(), file_name=nombre_word,
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True, type="primary", key="dl_word",
+            )
+        with c2:
+            clic_pdf = st.download_button(
+                "📕 Generar PDF", data=buf_pdf.getvalue(), file_name=nombre_pdf,
+                mime="application/pdf", use_container_width=True, type="primary", key="dl_pdf",
+            )
+
+        if clic_word or clic_pdf:
+            if clic_word:
+                nombre, contenido, tipo = nombre_word, buf_word.getvalue(), "Word"
+            else:
+                nombre, contenido, tipo = nombre_pdf, buf_pdf.getvalue(), "PDF"
+            ruta = guardar_reporte_en_carpeta(nombre, contenido)
+            if st.session_state.historial_actual is None:
+                n_ag, n_gen = registrar_historial(st.session_state.usuario, c, tipo, nombre,
+                                                   "; ".join(criterios_txt), cliente_visitado, ruta)
+                st.session_state.historial_actual = (n_ag, n_gen)
+            n_ag, n_gen = st.session_state.historial_actual
+            agencia_txt = safe_str(c.get("AGENCIA"), "-")
+            st.success(
+                f"Reporte {tipo} descargado. Visita N° {n_ag} en la agencia **{agencia_txt}** "
+                f"(N° {n_gen} en general)."
+            )
+            if ruta:
+                st.caption(f"📁 Copia guardada en: `{ruta}`")
+
+    st.write("")
+    st.markdown('<div class="nav-pie">', unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("⬅️ Visita", use_container_width=True):
+            ir_a("ubicacion")
+    with c2:
+        if st.button("🏁 Terminar y volver a buscar", use_container_width=True):
+            c_dni = safe_str(c.get("DOCPEN"))
+            borrar_borrador(st.session_state.usuario, c_dni)
+            st.session_state.cliente_actual = None
+            st.session_state.visitas = {}
+            st.session_state.garantias = []
+            st.session_state.rcc = []
+            st.session_state.ultimo_archivo = None
+            st.session_state.cliente_visitado = ""
+            st.session_state.historial_actual = None
+            ir_a("busqueda")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+# --------------------------------------------------------------------------
+# PANTALLA 7 — RESUMEN / REPORTE CONSOLIDADO POR AGENCIA Y CLIENTE
+# --------------------------------------------------------------------------
+def pantalla_consolidado():
+    header("📊", "Reporte Consolidado", "Visitas realizadas por agencia y por cliente")
+    st.caption(
+        "Se genera a partir de todo lo guardado en el historial (carpeta `data/`, "
+        "o la carpeta de reportes que configures en `utils/helpers.py` → REPORTES_DIR)."
+    )
+
+    resumen_agencia = reporte_consolidado_por_agencia()
+    with st.container(border=True):
+        st.markdown("**Por agencia** — clientes visitados y reportes generados")
+        if len(resumen_agencia):
+            st.dataframe(resumen_agencia, use_container_width=True, hide_index=True)
+        else:
+            st.caption("Aún no hay reportes generados para consolidar.")
+
+    agencias_disponibles = ["(Todas)"] + (
+        sorted(resumen_agencia["Agencia"].dropna().astype(str).unique().tolist())
+        if len(resumen_agencia) else []
+    )
+    with st.container(border=True):
+        st.markdown("**Detalle por cliente**")
+        agencia_sel = st.selectbox("Filtrar por agencia", agencias_disponibles, key="sel_agencia_consolidado")
+        filtro = None if agencia_sel == "(Todas)" else agencia_sel
+        detalle = reporte_consolidado_por_cliente(filtro)
+        if len(detalle):
+            st.dataframe(detalle, use_container_width=True, hide_index=True)
+        else:
+            st.caption("Sin datos para este filtro todavía.")
+
+        if filtro:
+            buf = generar_resumen_agencia_excel(filtro)
+            st.download_button(
+                f"⬇️ Descargar resumen de la agencia {filtro} (Excel)",
+                data=buf.getvalue(),
+                file_name=f"Resultado_Visitas_{slug(filtro)}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+
+    st.write("")
+    if st.button("⬅️ Volver a buscar", use_container_width=True):
+        ir_a("busqueda")
+
+
+# --------------------------------------------------------------------------
+# ROUTER
+# --------------------------------------------------------------------------
+top_menu()
+
+if st.session_state.borrador_prompt:
+    prompt_borrador()
+elif st.session_state.view == "consolidado" and st.session_state.df is not None:
+    pantalla_consolidado()
+elif st.session_state.view == "busqueda" or st.session_state.cliente_actual is None:
+    pantalla_busqueda()
+elif st.session_state.view == "evaluacion":
+    pantalla_evaluacion()
+elif st.session_state.view == "ficha":
+    pantalla_ficha()
+elif st.session_state.view == "ubicacion":
+    pantalla_ubicacion()
+elif st.session_state.view == "reporte":
+    pantalla_reporte()
+else:
+    pantalla_busqueda()
