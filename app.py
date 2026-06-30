@@ -425,13 +425,13 @@ def render_visita(clave, c):
         if foto_final is not None and lat is None:
             try:
                 from streamlit_js_eval import get_geolocation
-                loc = get_geolocation(key=f"geo_{clave}_{datetime.now().timestamp()}")
+                loc = get_geolocation(key=f"geo_{clave}")
                 if loc and "coords" in loc:
                     lat = loc["coords"]["latitude"]
                     lon = loc["coords"]["longitude"]
                     precision = loc["coords"].get("accuracy")
                 else:
-                    st.warning("No se pudo obtener la ubicación. Acepta el permiso en el navegador e inténtalo otra vez.")
+                    st.warning("No se pudo obtener la ubicación todavía. Acepta el permiso de ubicación en el navegador; se reintentará automáticamente.")
             except Exception:
                 st.warning("Geolocalización no disponible en este entorno. Ingresa la dirección manualmente.")
 
