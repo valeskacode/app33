@@ -440,23 +440,7 @@ def render_visita(clave, c):
             st.success(f"Lat: {lat:.6f} · Lon: {lon:.6f}" + (f" (±{precision:.0f} m)" if precision else ""))
             st.map(pd.DataFrame({"lat": [lat], "lon": [lon]}), zoom=15, height=160)
         else:
-            cgps1, cgps2 = st.columns([1, 2])
-            with cgps1:
-                capturar = st.button("📡 Capturar GPS", key=f"btn_gps_{clave}")
-            with cgps2:
-                st.caption("Sin ubicación capturada todavía.")
-            if capturar:
-                try:
-                    from streamlit_js_eval import get_geolocation
-                    loc = get_geolocation(key=f"geo_manual_{clave}_{datetime.now().timestamp()}")
-                    if loc and "coords" in loc:
-                        lat = loc["coords"]["latitude"]
-                        lon = loc["coords"]["longitude"]
-                        precision = loc["coords"].get("accuracy")
-                    else:
-                        st.warning("No se pudo obtener la ubicación. Acepta el permiso en el navegador e inténtalo otra vez.")
-                except Exception:
-                    st.warning("Geolocalización no disponible en este entorno. Ingresa la dirección manualmente.")
+            st.caption("Sin ubicación capturada todavía. Se obtiene automáticamente al tomar o subir la foto del Paso 4.")
 
         puede_guardar = (not obligatoria) or foto_final is not None or bool(data.get("foto_bytes"))
         if st.button(f"💾 Guardar visita de {etiqueta}", key=f"guardar_{clave}", use_container_width=True,
