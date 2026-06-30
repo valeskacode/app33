@@ -57,9 +57,7 @@ HISTORIAL_PATH = os.path.join(DATA_DIR, "historial_visitas.xlsx")
 #               REPORTES_DIR = "/home/tu_usuario/OneDrive/Auditoria/Visitas"
 # También puedes definir la variable de entorno VISITA_APP_REPORTES_DIR
 # al desplegar la app, sin tocar el código.
-REPORTES_DIR = os.environ.get(
-    "VISITA_APP_REPORTES_DIR", os.path.join(DATA_DIR, "reportes_generados")
-)
+REPORTES_DIR = r"C:\Users\vherrera\OneDrive - cajaarequipa.pe\MIS DOCUMENTOA\reportes"
 
 for _d in (DATA_DIR, DRAFTS_DIR, FOTOS_DIR, REPORTES_DIR):
     os.makedirs(_d, exist_ok=True)
