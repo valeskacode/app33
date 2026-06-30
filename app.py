@@ -18,7 +18,7 @@ from utils.helpers import (
     load_css, safe_str, safe_float, fmt_money, slug,
     cargar_excel, CRITERIOS_DEF, CLIENTE_VISITADO_OPCIONES,
     hay_borrador, guardar_borrador, cargar_borrador, borrar_borrador,
-    registrar_historial, leer_historial, ahora_peru,
+    registrar_historial, ahora_peru,
     calcular_resultado, criterios_seleccionados_lista,
     generar_word, generar_pdf, guardar_reporte_en_carpeta,
     reporte_consolidado_por_agencia, reporte_consolidado_por_cliente,
@@ -48,6 +48,7 @@ DEFAULTS = {
     "borrador_prompt": False,
     "ultimo_archivo": None,
     "cliente_visitado": "",
+    "historial_actual": None,
 }
 for k, v in DEFAULTS.items():
     if k not in st.session_state:
@@ -203,6 +204,7 @@ def seleccionar_cliente(fila):
         st.session_state.garantias = []
         st.session_state.rcc = []
         st.session_state.cliente_visitado = ""
+        st.session_state.historial_actual = None
         ir_a("evaluacion")
     st.rerun()
 
@@ -215,6 +217,7 @@ def prompt_borrador():
         with c1:
             if st.button("🔄 Continuar avance", use_container_width=True):
                 cargar_borrador(st.session_state.usuario, safe_str(c.get("DOCPEN")))
+                st.session_state.historial_actual = None
                 st.session_state.borrador_prompt = False
                 ir_a("evaluacion")
         with c2:
@@ -224,6 +227,7 @@ def prompt_borrador():
                 st.session_state.garantias = []
                 st.session_state.rcc = []
                 st.session_state.cliente_visitado = ""
+                st.session_state.historial_actual = None
                 st.session_state.borrador_prompt = False
                 ir_a("evaluacion")
 
@@ -538,53 +542,48 @@ def pantalla_reporte():
 
     with st.container(border=True):
         st.markdown("**Generar y descargar reporte**")
-        st.caption("Disponible en Word (.docx) y PDF. Se guarda automáticamente en la carpeta de reportes configurada.")
+        st.caption("Disponible en Word (.docx) y PDF. Un solo clic genera y descarga el archivo; se guarda automáticamente en la carpeta de reportes configurada.")
 
         base_nombre = f"Visita_{slug(c.get('CLIENTE'))}_{ahora_peru().strftime('%Y%m%d_%H%M')}"
+        nombre_word = base_nombre + ".docx"
+        nombre_pdf = base_nombre + ".pdf"
+
+        buf_word = generar_word(c, criterios_txt, calc, ing, visitas, st.session_state.garantias,
+                                 st.session_state.rcc, st.session_state.usuario, cliente_visitado)
+        buf_pdf = generar_pdf(c, criterios_txt, calc, ing, visitas, st.session_state.garantias,
+                               st.session_state.rcc, st.session_state.usuario, cliente_visitado)
 
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("📝 Generar Word", use_container_width=True, type="primary"):
-                buf = generar_word(c, criterios_txt, calc, ing, visitas, st.session_state.garantias,
-                                    st.session_state.rcc, st.session_state.usuario, cliente_visitado)
-                nombre = base_nombre + ".docx"
-                ruta = guardar_reporte_en_carpeta(nombre, buf.getvalue())
-                n_ag, n_gen = registrar_historial(st.session_state.usuario, c, "Word", nombre,
-                                                   "; ".join(criterios_txt), cliente_visitado, ruta)
-                st.session_state.ultimo_archivo = (nombre, buf.getvalue(), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-                st.session_state["ultimo_conteo"] = (n_ag, n_gen, ruta)
+            clic_word = st.download_button(
+                "📝 Generar Word", data=buf_word.getvalue(), file_name=nombre_word,
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True, type="primary", key="dl_word",
+            )
         with c2:
-            if st.button("📕 Generar PDF", use_container_width=True, type="primary"):
-                buf = generar_pdf(c, criterios_txt, calc, ing, visitas, st.session_state.garantias,
-                                   st.session_state.rcc, st.session_state.usuario, cliente_visitado)
-                nombre = base_nombre + ".pdf"
-                ruta = guardar_reporte_en_carpeta(nombre, buf.getvalue())
-                n_ag, n_gen = registrar_historial(st.session_state.usuario, c, "PDF", nombre,
-                                                   "; ".join(criterios_txt), cliente_visitado, ruta)
-                st.session_state.ultimo_archivo = (nombre, buf.getvalue(), "application/pdf")
-                st.session_state["ultimo_conteo"] = (n_ag, n_gen, ruta)
+            clic_pdf = st.download_button(
+                "📕 Generar PDF", data=buf_pdf.getvalue(), file_name=nombre_pdf,
+                mime="application/pdf", use_container_width=True, type="primary", key="dl_pdf",
+            )
 
-        if st.session_state.ultimo_archivo:
-            nombre, contenido, mime = st.session_state.ultimo_archivo
-            st.download_button(f"⬇️ Descargar {nombre}", data=contenido, file_name=nombre, mime=mime, use_container_width=True)
-            n_ag, n_gen, ruta = st.session_state.get("ultimo_conteo", (None, None, ""))
+        if clic_word or clic_pdf:
+            if clic_word:
+                nombre, contenido, tipo = nombre_word, buf_word.getvalue(), "Word"
+            else:
+                nombre, contenido, tipo = nombre_pdf, buf_pdf.getvalue(), "PDF"
+            ruta = guardar_reporte_en_carpeta(nombre, contenido)
+            if st.session_state.historial_actual is None:
+                n_ag, n_gen = registrar_historial(st.session_state.usuario, c, tipo, nombre,
+                                                   "; ".join(criterios_txt), cliente_visitado, ruta)
+                st.session_state.historial_actual = (n_ag, n_gen)
+            n_ag, n_gen = st.session_state.historial_actual
             agencia_txt = safe_str(c.get("AGENCIA"), "-")
-            if n_ag is not None:
-                st.success(
-                    f"Reporte generado. Visita N° {n_ag} en la agencia **{agencia_txt}** "
-                    f"(N° {n_gen} en general)."
-                )
+            st.success(
+                f"Reporte {tipo} descargado. Visita N° {n_ag} en la agencia **{agencia_txt}** "
+                f"(N° {n_gen} en general)."
+            )
             if ruta:
                 st.caption(f"📁 Copia guardada en: `{ruta}`")
-            else:
-                st.caption("⚠ No se pudo guardar copia automática en la carpeta de reportes; usa el botón de descarga.")
-
-    with st.expander("🗂️ Ver historial de reportes generados"):
-        hist = leer_historial()
-        if len(hist):
-            st.dataframe(hist.tail(20), use_container_width=True, hide_index=True)
-        else:
-            st.caption("Aún no se ha generado ningún reporte.")
 
     st.write("")
     st.markdown('<div class="nav-pie">', unsafe_allow_html=True)
@@ -602,6 +601,7 @@ def pantalla_reporte():
             st.session_state.rcc = []
             st.session_state.ultimo_archivo = None
             st.session_state.cliente_visitado = ""
+            st.session_state.historial_actual = None
             ir_a("busqueda")
     st.markdown('</div>', unsafe_allow_html=True)
 
