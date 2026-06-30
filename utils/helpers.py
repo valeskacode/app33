@@ -642,10 +642,37 @@ def generar_word(cliente, criterios_txt, ingresos_calc, ingresos_raw, visitas, g
     buf.seek(0)
     return buf
 
+# ... (código anterior de generar_pdf)
+    docpdf.build(elems)
+    buf.seek(0)
+    return buf
 
 # --------------------------------------------------------------------------
-# GENERACIÓN DE REPORTE — PDF (independiente de Word, usando reportlab)
+# FUNCIONES AUXILIARES FALTANTES
 # --------------------------------------------------------------------------
+
+def iniciales(nombre):
+    """Extrae las iniciales de un nombre."""
+    if not nombre: return "??"
+    partes = str(nombre).split()
+    return (partes[0][0] + (partes[1][0] if len(partes) > 1 else "")).upper()
+
+def clase_calificacion(calif):
+    """Devuelve la clase CSS para el estilo de calificación."""
+    calif = str(calif).upper()
+    if "NORMAL" in calif: return "cal-normal"
+    return "cal-riesgo"
+
+def solo_digitos(texto):
+    """Limpia un texto dejando solo números."""
+    return "".join(filter(str.isdigit, str(texto)))
+
+def clientes_similares(df, query):
+    """Busca clientes por coincidencia parcial."""
+    q = str(query).lower()
+    return df[df["CLIENTE"].str.lower().str.contains(q, na=False) | 
+              df["DOCPEN"].str.contains(q, na=False)]
+# GENERACIÓN DE REPORTE — PDF 
 def generar_pdf(cliente, criterios_txt, ingresos_calc, ingresos_raw, visitas, garantias, rcc, usuario, cliente_visitado=""):
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import cm
