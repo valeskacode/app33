@@ -61,8 +61,24 @@ REPORTES_DIR = os.environ.get(
     "VISITA_APP_REPORTES_DIR", os.path.join(DATA_DIR, "reportes_generados")
 )
 
+# ⚠️ IMPORTANTE: aquí debe ir una RUTA DE CARPETA del disco del servidor
+# (ej. "/home/usuario/OneDrive/Visitas" o "C:\Users\..."), NUNCA un link
+# web (https://...). Un link de OneDrive/SharePoint no es una carpeta del
+# sistema de archivos — el servidor no puede "entrar" a una URL como si
+# fuera un directorio. Si quieres sincronizar a OneDrive, instala el
+# cliente de escritorio de OneDrive en el equipo donde corre la app y
+# apunta esta ruta a la carpeta YA SINCRONIZADA en ese disco.
+#
+# Si la ruta configurada no es válida (no existe el disco, no hay permisos,
+# o por error se puso un link en vez de una ruta), la app NO debe romperse:
+# cae de vuelta a la carpeta local por defecto y sigue funcionando.
 for _d in (DATA_DIR, DRAFTS_DIR, FOTOS_DIR, REPORTES_DIR):
-    os.makedirs(_d, exist_ok=True)
+    try:
+        os.makedirs(_d, exist_ok=True)
+    except Exception as _e:  # ruta inválida (ej. una URL) u otro problema de disco
+        if _d is REPORTES_DIR:
+            REPORTES_DIR = os.path.join(DATA_DIR, "reportes_generados")
+            os.makedirs(REPORTES_DIR, exist_ok=True)
 
 EXCEL_SHEET_NAME = "MUESTRA_FINAL"
 
@@ -81,6 +97,28 @@ EXCEL_COLUMNS = [
     "CUOTAS_PAGADAS", "TIPO", "SEGMENTACION_MYPE", "CATEG_RESULTANTE",
     "CATEG_RESULTANTE_SINALIN", "CUENTA_AVAL", "FECHA_UTLPAGO", "UAI_IND",
     "ESTRATO", "TIPO_EXPEDIENTE",
+]
+
+# --------------------------------------------------------------------------
+# 📌 NUEVO — COLUMNAS OPCIONALES PARA LA TARJETA "Cliente encontrado"
+# --------------------------------------------------------------------------
+# La tarjeta de búsqueda (pantalla_busqueda → render_cliente_encontrado en
+# app.py) ahora muestra teléfono, correo y límite de crédito, tal como el
+# mockup. Tu Excel actual (columnas de arriba) NO trae esos tres datos, así
+# que por ahora se muestran como "No registrado" / "No disponible".
+#
+# EDITAR AQUÍ 👇 si tu base de datos sí tiene esas columnas: escribe el
+# nombre EXACTO de la columna (en mayúsculas, como queda tras leer el
+# Excel) en vez de "TELEFONO" / "EMAIL" / "LIMITE_CREDITO_MN", y usa ese
+# mismo nombre en `render_cliente_encontrado()` dentro de app.py (sección
+# marcada con 🔧 AQUÍ en ese archivo).
+COLUMNAS_OPCIONALES_CONTACTO = [
+    "TELEFONO",           # Ej: número de celular del cliente
+    "EMAIL",               # Ej: correo de contacto
+    "LIMITE_CREDITO_MN",   # Ej: línea de crédito aprobada (no es el saldo actual)
+]
+EXCEL_COLUMNS = EXCEL_COLUMNS + [
+    c for c in COLUMNAS_OPCIONALES_CONTACTO if c not in EXCEL_COLUMNS
 ]
 
 CLIENTE_VISITADO_OPCIONES = [
@@ -171,6 +209,73 @@ def slug(texto):
 
 
 # --------------------------------------------------------------------------
+# 📌 NUEVO — HELPERS PARA LA TARJETA "Cliente encontrado" Y LA LISTA DE
+# "Clientes similares" de la pantalla de Búsqueda (igualando el mockup).
+# --------------------------------------------------------------------------
+def solo_digitos(texto):
+    """Deja solo los dígitos de un texto. Útil para comparar DNIs aunque
+    el usuario escriba espacios, puntos o el nombre junto al número."""
+    return re.sub(r"\D", "", safe_str(texto))
+
+
+def iniciales(nombre):
+    """Devuelve hasta 2 iniciales en mayúscula para el avatar circular
+    (ej. 'Juan Pérez García' -> 'JP')."""
+    partes = [p for p in safe_str(nombre).split() if p]
+    if not partes:
+        return "?"
+    if len(partes) == 1:
+        return partes[0][:2].upper()
+    return (partes[0][0] + partes[1][0]).upper()
+
+
+def clase_calificacion(calif):
+    """Clase de color para el 'chip' de calificación (A=verde, B=ámbar,
+    cualquier otra cosa=rojo). Ajusta este mapeo si tu escala SBS usa
+    otras letras o un formato distinto."""
+    c = safe_str(calif).strip().upper()
+    if c.startswith("A"):
+        return "chip-calif-ok"
+    if c.startswith("B"):
+        return "chip-calif-warn"
+    if c:
+        return "chip-calif-bad"
+    return "chip-calif-na"
+
+
+def clientes_similares(df, fila_actual, max_resultados=3):
+    """Busca otros clientes con nombre o DNI parecido al de `fila_actual`,
+    para ayudar al usuario a distinguir homónimos o detectar posibles
+    duplicados (ver criterio "Documentos duplicados en más de un cliente"
+    en CRITERIOS_DEF). No es una librería de fuzzy-matching: es una
+    heurística simple a propósito, para no añadir dependencias nuevas.
+
+    Se considera "similar" un registro que:
+      - comparte 2 o más palabras del nombre completo, o
+      - comparte los primeros 6 dígitos del DNI,
+    y que NO es exactamente el mismo registro (mismo DNI Y mismo nombre).
+    """
+    nombre_actual = safe_str(fila_actual.get("CLIENTE")).strip().lower()
+    dni_actual = solo_digitos(fila_actual.get("DOCPEN"))
+    palabras_actual = set(nombre_actual.split())
+
+    candidatos = []
+    for _, row in df.iterrows():
+        nombre_row = safe_str(row.get("CLIENTE")).strip().lower()
+        dni_row = solo_digitos(row.get("DOCPEN"))
+        if dni_row == dni_actual and nombre_row == nombre_actual:
+            continue  # es el mismo cliente, no un "similar"
+        palabras_row = set(nombre_row.split())
+        comparten_nombre = len(palabras_actual & palabras_row) >= 2
+        comparten_dni = len(dni_actual) >= 6 and dni_row[:6] == dni_actual[:6]
+        if comparten_nombre or comparten_dni:
+            candidatos.append(row)
+        if len(candidatos) >= max_resultados:
+            break
+    return pd.DataFrame(candidatos) if candidatos else pd.DataFrame(columns=df.columns)
+
+
+# --------------------------------------------------------------------------
 # LECTURA DEL EXCEL (hoja MUESTRA_FINAL) — con caché para que cargue rápido
 # tanto en PC como en celular (el procesamiento ocurre en el servidor, no
 # en el dispositivo, así que cachear el resultado evita reprocesar el
@@ -233,6 +338,7 @@ def guardar_borrador(usuario, dni, cliente_actual):
     data["garantias"] = st.session_state.get("garantias", [])
     data["rcc"] = st.session_state.get("rcc", [])
     data["cliente_visitado"] = st.session_state.get("cliente_visitado", "")
+    data["observacion_criterio"] = st.session_state.get("observacion_criterio", "")
 
     visitas_serializables = {}
     for clave, v in st.session_state.get("visitas", {}).items():
@@ -268,6 +374,7 @@ def cargar_borrador(usuario, dni):
     st.session_state["garantias"] = data.get("garantias", [])
     st.session_state["rcc"] = data.get("rcc", [])
     st.session_state["cliente_visitado"] = data.get("cliente_visitado", "")
+    st.session_state["observacion_criterio"] = data.get("observacion_criterio", "")
 
     visitas = data.get("visitas", {})
     for clave, v in visitas.items():
@@ -293,8 +400,7 @@ def borrar_borrador(usuario, dni):
 # HISTORIAL (registro de quién generó qué informe y cuándo)
 # --------------------------------------------------------------------------
 HISTORIAL_COLUMNS = [
-    "Usuario_Auditor", "Agencia", "Cliente", "DNI", "Cuenta", "Operacion",
-    "Modulo", "AnalistaVigente", "AnalistaEvaluador",
+    "Usuario_Auditor", "Agencia", "Cliente", "DNI", "Cuenta",
     "N_Visita_Agencia", "N_Visita_General",
     "ClienteVisitado", "Fecha", "Hora",
     "TipoArchivo", "NombreArchivo", "RutaGuardado", "CriteriosSeleccionados",
@@ -337,10 +443,6 @@ def registrar_historial(usuario, cliente_actual, tipo_archivo, nombre_archivo,
         safe_str(cliente_actual.get("CLIENTE")),
         safe_str(cliente_actual.get("DOCPEN")),
         safe_str(cliente_actual.get("BCCTA")),
-        safe_str(cliente_actual.get("BCOPER")),
-        safe_str(cliente_actual.get("MODULO")),
-        safe_str(cliente_actual.get("ANALISTA")),
-        safe_str(cliente_actual.get("ANALISTA_EVAL")),
         n_agencia_prev + 1, n_general_prev + 1,
         cliente_visitado,
         ahora.strftime("%d/%m/%Y"), ahora.strftime("%H:%M:%S"),
@@ -401,102 +503,55 @@ def reporte_consolidado_por_cliente(agencia=None):
     return resumen
 
 
-def generar_resumen_agencia_excel(agencia):
-    """Genera el Excel 'Resultado de visitas' por agencia, con el mismo
-    formato que usa Auditoría Interna (encabezado amarillo, columnas
-    N°/Cuenta Cliente/N° Operación/Nombre de Cliente/Módulo/Analista
-    Vigente/Analista Evaluador/Resultado de la visita/Cliente visitado,
-    y un resumen final con el conteo por tipo de resultado)."""
-    import openpyxl
-    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+def guardar_reporte_en_carpeta(nombre_archivo: str, contenido_bytes: bytes) -> dict:
+    """Guarda el reporte en local Y lo sube a OneDrive vía Graph API
+    (si las credenciales están configuradas).
 
-    hist = leer_historial()
-    if not hist.empty and "Agencia" in hist.columns and agencia:
-        hist = hist[hist["Agencia"].astype(str).str.strip() == str(agencia).strip()]
+    Retorna un dict con:
+      local   — ruta local donde se guardó (o "" si falló).
+      online  — URL web en OneDrive (o "" si no se subió).
+      error   — mensaje de error, si hubo alguno.
+    """
+    resultado = {"local": "", "online": "", "error": ""}
 
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Resultado de Visitas"
-
-    amarillo = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
-    borde = Border(*(Side(style="thin"),) * 4)
-    negrita = Font(bold=True)
-
-    ws.merge_cells("A1:I1")
-    ws["A1"] = "GERENCIA DE AUDITORÍA INTERNA"
-    ws["A1"].font = Font(bold=True, size=11)
-    ws.merge_cells("A2:I2")
-    ws["A2"] = "REF: RESULTADO DE VISITAS"
-    ws["A2"].font = Font(bold=True, size=11)
-    ws.merge_cells("A3:I3")
-    ws["A3"] = f"AGENCIA {agencia or ''}"
-    ws["A3"].font = Font(bold=True, size=11)
-
-    encabezados = ["N°", "Cuenta Cliente", "Número Operación", "Nombre de Cliente",
-                   "Módulo", "Analista Vigente", "Analista Evaluador",
-                   "Resultado de la visita", "Cliente visitado"]
-    fila_enc = 5
-    for col, titulo in enumerate(encabezados, start=1):
-        celda = ws.cell(row=fila_enc, column=col, value=titulo)
-        celda.fill = amarillo
-        celda.font = negrita
-        celda.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        celda.border = borde
-
-    conteo_resultado = {}
-    fila = fila_enc + 1
-    if not hist.empty:
-        hist_ordenado = hist.reset_index(drop=True)
-        for i, row in hist_ordenado.iterrows():
-            cliente_visitado = safe_str(row.get("ClienteVisitado"))
-            valores = [
-                i + 1,
-                safe_str(row.get("Cuenta")),
-                safe_str(row.get("Operacion")),
-                safe_str(row.get("Cliente")),
-                safe_str(row.get("Modulo")),
-                safe_str(row.get("AnalistaVigente")),
-                safe_str(row.get("AnalistaEvaluador")),
-                "SI",
-                cliente_visitado,
-            ]
-            for col, val in enumerate(valores, start=1):
-                celda = ws.cell(row=fila, column=col, value=val)
-                celda.border = borde
-                celda.alignment = Alignment(vertical="center", wrap_text=True)
-            if cliente_visitado:
-                conteo_resultado[cliente_visitado] = conteo_resultado.get(cliente_visitado, 0) + 1
-            fila += 1
-
-    fila += 1
-    ws.cell(row=fila, column=1, value="Resumen:").font = negrita
-    fila += 1
-    for opcion in CLIENTE_VISITADO_OPCIONES:
-        n = conteo_resultado.get(opcion, 0)
-        ws.cell(row=fila, column=1, value=f"{opcion} ({n})")
-        fila += 1
-
-    anchos = [5, 16, 16, 28, 22, 16, 16, 14, 30]
-    for i, ancho in enumerate(anchos, start=1):
-        ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = ancho
-
-    buf = io.BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    return buf
-
-
-def guardar_reporte_en_carpeta(nombre_archivo, contenido_bytes):
-    """Guarda una copia física del reporte en REPORTES_DIR (ver
-    definición arriba de esta carpeta — puede apuntar a una carpeta
-    sincronizada con OneDrive). Devuelve la ruta final, o "" si falló."""
+    # 1. Copia local (siempre)
     try:
         destino = os.path.join(REPORTES_DIR, nombre_archivo)
         with open(destino, "wb") as f:
             f.write(contenido_bytes)
-        return destino
+        resultado["local"] = destino
+    except Exception as e:
+        resultado["error"] = f"No se pudo guardar localmente: {e}"
+
+    # 2. OneDrive vía Graph API (si está configurado)
+    try:
+        from utils.onedrive import credenciales_configuradas, subir_reporte
+        if credenciales_configuradas():
+            ok, url_o_error = subir_reporte(nombre_archivo, contenido_bytes)
+            if ok:
+                resultado["online"] = url_o_error
+            else:
+                resultado["error"] += f" | OneDrive: {url_o_error}"
+    except Exception as e:
+        resultado["error"] += f" | OneDrive (excepción): {e}"
+
+    return resultado
+
+
+def sincronizar_historial_onedrive():
+    """Sube el Excel de historial a OneDrive cada vez que se genera un
+    reporte nuevo, para que quede respaldado en la nube."""
+    try:
+        from utils.onedrive import credenciales_configuradas, subir_historial
+        if not credenciales_configuradas():
+            return
+        if not os.path.exists(HISTORIAL_PATH):
+            return
+        with open(HISTORIAL_PATH, "rb") as f:
+            contenido = f.read()
+        subir_historial(contenido)
     except Exception:
-        return ""
+        pass  # silencioso — el historial local ya se guardó
 
 
 # --------------------------------------------------------------------------
@@ -539,7 +594,7 @@ def criterios_seleccionados_lista(criterios, calif_revision):
 # --------------------------------------------------------------------------
 # GENERACIÓN DE REPORTE — WORD
 # --------------------------------------------------------------------------
-def generar_word(cliente, criterios_txt, ingresos_calc, ingresos_raw, visitas, garantias, rcc, usuario, cliente_visitado=""):
+def generar_word(cliente, criterios_txt, ingresos_calc, ingresos_raw, visitas, garantias, rcc, usuario, cliente_visitado="", observacion_criterio=""):
     from docx import Document
     from docx.shared import Cm, Pt, RGBColor
     from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -567,6 +622,7 @@ def generar_word(cliente, criterios_txt, ingresos_calc, ingresos_raw, visitas, g
         return table
 
     doc = Document()
+    doc.add_heading("VISITA A CLIENTES DE PEQUEÑA EMPRESA", level=0)
     p = doc.add_paragraph("CMAC Caja Arequipa — Unidad de Auditoría Interna")
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     doc.add_paragraph(f"Auditor: {usuario}  ·  Fecha de visita: {ahora_peru().strftime('%d/%m/%Y %H:%M')} (hora Perú)")
@@ -575,6 +631,9 @@ def generar_word(cliente, criterios_txt, ingresos_calc, ingresos_raw, visitas, g
         add_heading(doc, "0. Criterio para la visita")
         for c in criterios_txt:
             doc.add_paragraph("• " + c)
+    if observacion_criterio:
+        add_heading(doc, "0.1 Observación")
+        doc.add_paragraph(observacion_criterio)
 
     add_heading(doc, "I. Datos del cliente y crédito")
     add_kv_table(doc, [
@@ -597,10 +656,22 @@ def generar_word(cliente, criterios_txt, ingresos_calc, ingresos_raw, visitas, g
         ("Resultado de la visita / Cliente visitado", cliente_visitado or "-"),
     ])
 
-    for clave, titulo in [("negocio", "II. Visita al negocio (dirección del negocio)"),
-                           ("laboral", "III. Visita al centro laboral"),
-                           ("aval", "IV. Visita al aval"),
-                           ("domicilio", "V. Visita al domicilio")]:
+    add_heading(doc, "II. Ingresos y gastos")
+    add_kv_table(doc, [
+        ("Ingreso principal", fmt_money(ingresos_raw.get("ingreso_principal"))),
+        ("Otros ingresos", fmt_money(ingresos_raw.get("otros_ingresos"))),
+        ("Total ingresos", fmt_money(ingresos_calc["total_ingresos"])),
+        ("Gastos operativos", fmt_money(ingresos_calc["gastos_operativos"])),
+        ("Gastos familiares", fmt_money(ingresos_calc["gastos_familiares"])),
+        ("Total gastos", fmt_money(ingresos_calc["total_gastos"])),
+        ("Utilidad neta", fmt_money(ingresos_calc["utilidad_neta"])),
+        ("Margen", f"{ingresos_calc['margen']:.1f}%"),
+    ])
+
+    for clave, titulo in [("negocio", "III. Visita al negocio (dirección del negocio)"),
+                           ("laboral", "IV. Visita al centro laboral"),
+                           ("aval", "V. Visita al aval"),
+                           ("domicilio", "VI. Visita al domicilio")]:
         d = visitas.get(clave)
         add_heading(doc, titulo)
         if d:
@@ -642,38 +713,11 @@ def generar_word(cliente, criterios_txt, ingresos_calc, ingresos_raw, visitas, g
     buf.seek(0)
     return buf
 
-# ... (código anterior de generar_pdf)
-    docpdf.build(elems)
-    buf.seek(0)
-    return buf
 
 # --------------------------------------------------------------------------
-# FUNCIONES AUXILIARES FALTANTES
+# GENERACIÓN DE REPORTE — PDF (independiente de Word, usando reportlab)
 # --------------------------------------------------------------------------
-
-def iniciales(nombre):
-    """Extrae las iniciales de un nombre."""
-    if not nombre: return "??"
-    partes = str(nombre).split()
-    return (partes[0][0] + (partes[1][0] if len(partes) > 1 else "")).upper()
-
-def clase_calificacion(calif):
-    """Devuelve la clase CSS para el estilo de calificación."""
-    calif = str(calif).upper()
-    if "NORMAL" in calif: return "cal-normal"
-    return "cal-riesgo"
-
-def solo_digitos(texto):
-    """Limpia un texto dejando solo números."""
-    return "".join(filter(str.isdigit, str(texto)))
-
-def clientes_similares(df, query):
-    """Busca clientes por coincidencia parcial."""
-    q = str(query).lower()
-    return df[df["CLIENTE"].str.lower().str.contains(q, na=False) | 
-              df["DOCPEN"].str.contains(q, na=False)]
-# GENERACIÓN DE REPORTE — PDF 
-def generar_pdf(cliente, criterios_txt, ingresos_calc, ingresos_raw, visitas, garantias, rcc, usuario, cliente_visitado=""):
+def generar_pdf(cliente, criterios_txt, ingresos_calc, ingresos_raw, visitas, garantias, rcc, usuario, cliente_visitado="", observacion_criterio=""):
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import cm
     from reportlab.lib import colors
@@ -693,6 +737,7 @@ def generar_pdf(cliente, criterios_txt, ingresos_calc, ingresos_raw, visitas, ga
     normal = styles["Normal"]
 
     elems = [
+        Paragraph("VISITA A CLIENTES DE PEQUEÑA EMPRESA", h1),
         Paragraph("CMAC Caja Arequipa — Unidad de Auditoría Interna", normal),
         Paragraph(f"Auditor: {usuario} · Fecha de visita: {ahora_peru().strftime('%d/%m/%Y %H:%M')} (hora Perú)", normal),
         Spacer(1, 10),
@@ -714,6 +759,9 @@ def generar_pdf(cliente, criterios_txt, ingresos_calc, ingresos_raw, visitas, ga
         elems.append(Paragraph("0. Criterio para la visita", h2))
         for c in criterios_txt:
             elems.append(Paragraph("• " + c, normal))
+    if observacion_criterio:
+        elems.append(Paragraph("0.1 Observación", h2))
+        elems.append(Paragraph(observacion_criterio, normal))
 
     elems.append(Paragraph("I. Datos del cliente y crédito", h2))
     elems.append(tabla_kv([
@@ -733,10 +781,20 @@ def generar_pdf(cliente, criterios_txt, ingresos_calc, ingresos_raw, visitas, ga
         ("Resultado de la visita / Cliente visitado", cliente_visitado or "-"),
     ]))
 
-    for clave, titulo in [("negocio", "II. Visita al negocio (dirección del negocio)"),
-                           ("laboral", "III. Visita al centro laboral"),
-                           ("aval", "IV. Visita al aval"),
-                           ("domicilio", "V. Visita al domicilio")]:
+    elems.append(Paragraph("II. Ingresos y gastos", h2))
+    elems.append(tabla_kv([
+        ("Total ingresos", fmt_money(ingresos_calc["total_ingresos"])),
+        ("Gastos operativos", fmt_money(ingresos_calc["gastos_operativos"])),
+        ("Gastos familiares", fmt_money(ingresos_calc["gastos_familiares"])),
+        ("Total gastos", fmt_money(ingresos_calc["total_gastos"])),
+        ("Utilidad neta", fmt_money(ingresos_calc["utilidad_neta"])),
+        ("Margen", f"{ingresos_calc['margen']:.1f}%"),
+    ]))
+
+    for clave, titulo in [("negocio", "III. Visita al negocio (dirección del negocio)"),
+                           ("laboral", "IV. Visita al centro laboral"),
+                           ("aval", "V. Visita al aval"),
+                           ("domicilio", "VI. Visita al domicilio")]:
         d = visitas.get(clave)
         elems.append(Paragraph(titulo, h2))
         if d:
