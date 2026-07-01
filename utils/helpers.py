@@ -626,7 +626,7 @@ def generar_word(cliente, criterios_txt, ingresos_calc, ingresos_raw, visitas, g
         return table
 
     doc = Document()
-    doc.add_heading("VISITA A CLIENTES DE PEQUEÑA EMPRESA", level=0)
+    doc.add_heading("VISITA A CLIENTES", level=0)
     p = doc.add_paragraph("CMAC Caja Arequipa — Unidad de Auditoría Interna")
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     doc.add_paragraph(f"Auditor: {usuario}  ·  Fecha de visita: {ahora_peru().strftime('%d/%m/%Y %H:%M')} (hora Perú)")
