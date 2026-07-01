@@ -752,7 +752,7 @@ def generar_pdf(cliente, criterios_txt, ingresos_calc, ingresos_raw, visitas, ga
     normal = styles["Normal"]
 
     elems = [
-        Paragraph("VISITA A CLIENTES DE PEQUEÑA EMPRESA", h1),
+        Paragraph("VISITA A CLIENTES", h1),
         Paragraph("CMAC Caja Arequipa — Unidad de Auditoría Interna", normal),
         Paragraph(f"Auditor: {usuario} · Fecha de visita: {ahora_peru().strftime('%d/%m/%Y %H:%M')} (hora Perú)", normal),
         Spacer(1, 10),
