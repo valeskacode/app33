@@ -533,12 +533,6 @@ def pantalla_ficha():
     st.markdown('</div>', unsafe_allow_html=True)
 
 
-# --------------------------------------------------------------------------
-# (Se eliminó la pantalla de "Ingresos y Gastos" / evaluación de crédito
-#  detallada a pedido — esa vista ya no se muestra en la app. Los cálculos
-#  de utilidad neta quedan en 0 por defecto en el reporte si no se usan.)
-# --------------------------------------------------------------------------
-
 
 # --------------------------------------------------------------------------
 # PANTALLA 5 — UBICACIÓN (VISITA: DOMICILIO / NEGOCIO / AVAL)
@@ -554,7 +548,7 @@ TIPOS_VISITA = {
 def pantalla_ubicacion():
     c = cliente()
     header("📍", "Nueva Visita", "Verificación: negocio (obligatorio), laboral, aval y domicilio (opcionales)")
-
+    """
     with st.container(border=True):
         st.markdown("**Cliente visitado** — resultado general de esta visita")
         idx_actual = (
@@ -583,12 +577,12 @@ def pantalla_ubicacion():
             guardar_avance()
             ir_a("reporte")
     st.markdown('</div>', unsafe_allow_html=True)
-
+"""
 
 def render_visita(clave, c):
-    #icono, etiqueta, k_dir, k_dist, k_prov, k_depto, obligatoria = TIPOS_VISITA[clave]
-   #visitas = st.session_state.visitas
-   # data = visitas.get(clave, {})
+    icono, etiqueta, k_dir, k_dist, k_prov, k_depto, obligatoria = TIPOS_VISITA[clave]
+    visitas = st.session_state.visitas
+    data = visitas.get(clave, {})
 
     with st.container(border=True):
         # PASO 3 — Datos del lugar (primero)
