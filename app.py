@@ -26,7 +26,7 @@ from utils.helpers import (
     reporte_consolidado_por_agencia, reporte_consolidado_por_cliente,
     # 📌 NUEVO — para la pantalla de Búsqueda igualando el mockup:
     iniciales, clase_calificacion, clientes_similares, solo_digitos,
-    to_excel
+    to_excel, reporte_anexo07, to_excel_anexo07,
 )
 
 st.set_page_config(
@@ -897,13 +897,23 @@ def pantalla_consolidado():
         
         if len(detalle):
             st.dataframe(detalle, use_container_width=True, hide_index=True)
-            
+
             # --- Lógica de descarga agregada ---
-            excel_data = to_excel(detalle)
+            if filtro:
+                # Se filtró por una agencia específica: exportar en el
+                # formato oficial "Anexo 07 — Resultado de visitas"
+                # (misma cabecera, tabla y resumen que usa Auditoría Interna).
+                detalle_anexo07 = reporte_anexo07(filtro)
+                excel_data = to_excel_anexo07(detalle_anexo07, filtro)
+                nombre_archivo = f"Anexo07_ResultadoVisitas_{slug(agencia_sel)}_{datetime.now().strftime('%Y%m%d')}.xlsx"
+            else:
+                excel_data = to_excel(detalle)
+                nombre_archivo = f"Reporte_Consolidado_Todas_{datetime.now().strftime('%Y%m%d')}.xlsx"
+
             st.download_button(
                 label="📥 Descargar Detalle en Excel",
                 data=excel_data,
-                file_name=f"Reporte_Consolidado_{agencia_sel if agencia_sel != '(Todas)' else 'Todas'}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                file_name=nombre_archivo,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True
             )
