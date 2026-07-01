@@ -263,7 +263,7 @@ def pantalla_busqueda():
     # SECCIÓN 2 — BÚSQUEDA INTELIGENTE
     # =====================================================================
     with st.container(border=True):
-        st.markdown("**🔎 Búsqueda Inteligente**")
+        st.markdown("**🔎 Búsqueda de Cliente**")
         st.caption("Encuentra a tu cliente por nombre, DNI o código")
 
         c_busq, c_scan = st.columns([2.6, 1])
@@ -274,7 +274,7 @@ def pantalla_busqueda():
             )
         with c_scan:
             st.markdown('<div class="marker-buscar"></div>', unsafe_allow_html=True)
-            st.button("🔍 Buscar", use_container_width=True, key="btn_buscar")
+            st.button("Buscar", use_container_width=True, key="btn_buscar")
 
     if not busqueda:
         return
@@ -326,8 +326,8 @@ def pantalla_busqueda():
 
 
 def render_cliente_encontrado(row, df):
-    """Tarjeta compacta: solo nombre, DNI, dirección y agencia,
-    más el botón Confirmar este cliente."""
+    """Tarjeta compacta: nombre, DNI, dirección y agencia,
+     botón Confirmar este cliente."""
     nombre   = safe_str(row.get("CLIENTE"), "Sin nombre")
     dni      = safe_str(row.get("DOCPEN"), "-")
     agencia  = safe_str(row.get("AGENCIA"), "-")
@@ -343,16 +343,16 @@ def render_cliente_encontrado(row, df):
                     <span class="badge-encontrado">Cliente encontrado</span>
                 </div>
                 <div style="padding:0.5rem 0.2rem;font-size:0.85rem;color:#475569;">
-                    <div class="dato-fila">🆔 <b>DNI:</b> {dni}</div>
-                    <div class="dato-fila">📍 <b>Dirección:</b> {direccion}</div>
-                    <div class="dato-fila">🏦 <b>Agencia:</b> {agencia}</div>
+                    <div class="dato-fila"> <b>DNI:</b> {dni}</div>
+                    <div class="dato-fila"> <b>Dirección:</b> {direccion}</div>
+                    <div class="dato-fila"> <b>Agencia:</b> {agencia}</div>
                 </div>
             </div>""",
         unsafe_allow_html=True,
     )
 
     st.markdown('<div class="marker-confirmar"></div>', unsafe_allow_html=True)
-    if st.button("✅ Confirmar este cliente", use_container_width=True,
+    if st.button("Confirmar este cliente", use_container_width=True,
                  key="btn_confirmar_cliente", type="primary"):
         seleccionar_cliente(row.to_dict())
     st.caption(f"Continuar con la evaluación de {nombre}")
