@@ -333,6 +333,7 @@ def guardar_borrador(usuario, dni, cliente_actual):
     data = {"cliente_actual": cliente_actual, "guardado_en": ahora_peru().isoformat()}
 
     data["criterios"] = {k: v for k, v in st.session_state.items() if k.startswith("chk_")}
+    data["_criterios_snapshot"] = data["criterios"]  # copia explícita para la vista Reporte
     data["calif_revision"] = st.session_state.get("calif_revision", "")
     data["ingresos_gastos"] = {k: st.session_state.get(k, 0.0) for k in INGRESOS_KEYS}
     data["garantias"] = st.session_state.get("garantias", [])
@@ -366,6 +367,7 @@ def cargar_borrador(usuario, dni):
 
     for k, v in data.get("criterios", {}).items():
         st.session_state[k] = v
+    st.session_state["_criterios_snapshot"] = data.get("_criterios_snapshot", data.get("criterios", {}))
     st.session_state["calif_revision"] = data.get("calif_revision", "")
 
     for k, v in data.get("ingresos_gastos", {}).items():
