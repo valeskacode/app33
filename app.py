@@ -50,7 +50,7 @@ DEFAULTS = {
     "borrador_prompt": False,
     "ultimo_archivo": None,
     "cliente_visitado": "",
-    "observacion_criterio": "",
+
     # 📌 NUEVO — estado de la pantalla de Búsqueda/Carga rediseñada:
     "archivo_meta": {},          # nombre, tamaño y fecha del Excel cargado
     "mostrar_preview": False,    # toggle de "Vista previa de datos"
@@ -330,33 +330,12 @@ def pantalla_busqueda():
 
 
 def render_cliente_encontrado(row, df):
-    """Tarjeta de cliente encontrado, igual al mockup: avatar con
-    iniciales, badge verde "Cliente encontrado", datos de contacto a la
-    izquierda y datos del crédito a la derecha, botón "Confirmar este
-    cliente" y, debajo, una lista de clientes con nombre/DNI parecido
-    (para detectar homónimos o posibles duplicados)."""
-    nombre = safe_str(row.get("CLIENTE"), "Sin nombre")
-    dni = safe_str(row.get("DOCPEN"), "-")
-    codigo = safe_str(row.get("CODCLI"), "-")
+    """Tarjeta compacta: solo nombre, DNI, dirección y agencia,
+    más el botón Confirmar este cliente."""
+    nombre   = safe_str(row.get("CLIENTE"), "Sin nombre")
+    dni      = safe_str(row.get("DOCPEN"), "-")
+    agencia  = safe_str(row.get("AGENCIA"), "-")
     direccion = safe_str(row.get("DIRECCION_DOM")) or safe_str(row.get("DIRECCION_NEG"), "No registrada")
-    dias_atraso_num = safe_float(row.get("DIAS_ATRASO"))
-    calificacion = safe_str(row.get("CATEG_RESULTANTE"), "-")
-
-    # ------------------------------------------------------------------
-    # 🔧 AQUÍ: teléfono, correo y límite de crédito NO existen todavía en
-    # las columnas del Excel (ver EXCEL_COLUMNS en utils/helpers.py). Si
-    # tu base sí los tiene, agrega el nombre real de columna en
-    # utils/helpers.py → COLUMNAS_OPCIONALES_CONTACTO, y reemplaza aquí
-    # "TELEFONO" / "EMAIL" / "LIMITE_CREDITO_MN" por ese mismo nombre.
-    # ------------------------------------------------------------------
-    telefono = safe_str(row.get("TELEFONO"), "No registrado")
-    correo = safe_str(row.get("EMAIL"), "No registrado")
-    limite_credito = (
-        fmt_money(row.get("LIMITE_CREDITO_MN"))
-        if safe_str(row.get("LIMITE_CREDITO_MN")) else "No disponible"
-    )
-
-    clase_atraso = "valor-alerta" if dias_atraso_num > 0 else "valor-ok"
 
     st.markdown(
         f"""<div class="cliente-card">
@@ -367,32 +346,18 @@ def render_cliente_encontrado(row, df):
                     </div>
                     <span class="badge-encontrado">Cliente encontrado</span>
                 </div>
-                <div class="cliente-grid">
-                    <div class="cliente-col">
-                        <div class="dato-fila">📞 {telefono}</div>
-                        <div class="dato-fila">✉️ {correo}</div>
-                        <div class="dato-fila">📍 {direccion}</div>
-                        <div class="dato-fila">🆔 DNI: <b>{dni}</b></div>
-                    </div>
-                    <div class="cliente-col">
-                        <div class="dato-etiqueta">Código de Cliente</div>
-                        <div class="dato-valor">{codigo}</div>
-                        <div class="dato-etiqueta">Límite de Crédito</div>
-                        <div class="dato-valor">{limite_credito}</div>
-                        <div class="dato-etiqueta">Saldo Actual</div>
-                        <div class="dato-valor">{fmt_money(row.get('SALDO_MN'))}</div>
-                        <div class="dato-etiqueta">Días de Atraso</div>
-                        <div class="dato-valor {clase_atraso}">{dias_atraso_num:.0f} días</div>
-                        <div class="dato-etiqueta">Calificación</div>
-                        <span class="chip-calif {clase_calificacion(calificacion)}">{calificacion}</span>
-                    </div>
+                <div style="padding:0.5rem 0.2rem;font-size:0.85rem;color:#475569;">
+                    <div class="dato-fila">🆔 <b>DNI:</b> {dni}</div>
+                    <div class="dato-fila">📍 <b>Dirección:</b> {direccion}</div>
+                    <div class="dato-fila">🏦 <b>Agencia:</b> {agencia}</div>
                 </div>
             </div>""",
         unsafe_allow_html=True,
     )
 
     st.markdown('<div class="marker-confirmar"></div>', unsafe_allow_html=True)
-    if st.button("✅ Confirmar este cliente", use_container_width=True, key="btn_confirmar_cliente", type="primary"):
+    if st.button("✅ Confirmar este cliente", use_container_width=True,
+                 key="btn_confirmar_cliente", type="primary"):
         seleccionar_cliente(row.to_dict())
     st.caption(f"Continuar con la evaluación de {nombre}")
 
@@ -400,7 +365,6 @@ def render_cliente_encontrado(row, df):
     if len(similares):
         st.write("")
         st.markdown("**¿No es este cliente?**")
-        st.caption("Estos otros clientes tienen nombre o DNI parecido — verifica que no se trate de la misma persona registrada dos veces.")
         render_lista_similares(similares)
 
 
@@ -436,7 +400,7 @@ def seleccionar_cliente(fila):
         st.session_state.garantias = []
         st.session_state.rcc = []
         st.session_state.cliente_visitado = ""
-        st.session_state.observacion_criterio = ""
+
         ir_a("evaluacion")
     st.rerun()
 
@@ -458,7 +422,7 @@ def prompt_borrador():
                 st.session_state.garantias = []
                 st.session_state.rcc = []
                 st.session_state.cliente_visitado = ""
-                st.session_state.observacion_criterio = ""
+        
                 st.session_state.borrador_prompt = False
                 ir_a("evaluacion")
 
@@ -491,15 +455,6 @@ def pantalla_evaluacion():
     else:
         badge("Sin criterios de riesgo marcados", "badge-ok")
 
-    with st.container(border=True):
-        st.markdown("**Observación**")
-        st.caption("Notas adicionales sobre el criterio evaluado (se mostrará en el Resumen de evaluación y en el reporte final).")
-        st.text_area(
-            "Observación", key="observacion_criterio",
-            placeholder="Ej: Se observa documentación con datos inconsistentes en el contrato de alquiler del negocio.",
-            label_visibility="collapsed",
-        )
-
     st.write("")
     c1, c2 = st.columns(2)
     with c1:
@@ -507,6 +462,12 @@ def pantalla_evaluacion():
             ir_a("busqueda")
     with c2:
         if st.button("Guardar y continuar ➡️", use_container_width=True, type="primary"):
+            # Guardar snapshot explícito de los criterios marcados para que
+            # la vista Reporte los pueda leer aunque Streamlit limpie los
+            # widgets al cambiar de pantalla.
+            st.session_state["_criterios_snapshot"] = {
+                k: v for k, v in st.session_state.items() if k.startswith("chk_")
+            }
             guardar_avance()
             ir_a("ficha")
 
@@ -630,55 +591,7 @@ def render_visita(clave, c):
     data = visitas.get(clave, {})
 
     with st.container(border=True):
-        etiqueta_foto = "Foto de verificación (obligatoria)" if obligatoria else "Foto de verificación (opcional)"
-        st.markdown(f"**Paso 1 · {etiqueta_foto}**")
-        foto_camara = st.camera_input("Tomar foto ahora", key=f"camara_{clave}")
-        foto_archivo = st.file_uploader("...o subir desde galería", type=["jpg", "jpeg", "png"], key=f"upload_{clave}")
-        foto_final = foto_camara if foto_camara is not None else foto_archivo
-        if foto_final is None and data.get("foto_bytes"):
-            st.image(data["foto_bytes"], caption="Foto guardada previamente", width=200)
-        if obligatoria and foto_final is None and not data.get("foto_bytes"):
-            st.warning("⚠ Esta sección requiere foto de verificación antes de guardar.")
-
-        st.markdown("**Paso 2 · Ubicación GPS**")
-        cgps1, cgps2 = st.columns([1, 2])
-        with cgps1:
-            if st.button("📡 Capturar GPS", key=f"btn_gps_{clave}"):
-                st.session_state[f"solicitar_gps_{clave}"] = True
-
-        lat, lon, precision = data.get("lat"), data.get("lon"), data.get("precision")
-
-        if st.session_state.get(f"solicitar_gps_{clave}"):
-            # 🔧 IMPORTANTE: la clave del componente debe ser ESTABLE (no
-            # incluir la hora/timestamp). streamlit_js_eval funciona en dos
-            # pasos: (1) al montarse pide permiso al navegador y de momento
-            # devuelve None; (2) cuando el celular responde, Streamlit
-            # vuelve a ejecutar el script y ESTA VEZ, como la clave es la
-            # misma, el componente ya trae el resultado real. Si la clave
-            # cambiara en cada intento (como antes, con timestamp), cada
-            # vuelta sería un componente nuevo y el resultado real nunca se
-            # llegaría a leer.
-            try:
-                from streamlit_js_eval import get_geolocation
-                loc = get_geolocation(key=f"geo_{clave}")
-                if loc and "coords" in loc:
-                    lat = loc["coords"]["latitude"]
-                    lon = loc["coords"]["longitude"]
-                    precision = loc["coords"].get("accuracy")
-                    st.session_state[f"solicitar_gps_{clave}"] = False
-                else:
-                    st.info("📡 Solicitando ubicación al celular... si tu navegador pidió permiso, acéptalo. Si no pasa nada en unos segundos, presiona 'Capturar GPS' otra vez.")
-            except Exception:
-                st.warning("Geolocalización no disponible en este entorno. Ingresa la dirección manualmente.")
-                st.session_state[f"solicitar_gps_{clave}"] = False
-
-        with cgps2:
-            if lat and lon:
-                st.success(f"Lat: {lat:.6f} · Lon: {lon:.6f}" + (f" (±{precision:.0f} m)" if precision else ""))
-                st.map(pd.DataFrame({"lat": [lat], "lon": [lon]}), zoom=15, height=160)
-            else:
-                st.caption("Sin ubicación capturada todavía.")
-
+        # PASO 3 — Datos del lugar (primero)
         st.markdown("**Paso 3 · Datos del lugar**")
         valor_dir = data.get("direccion") or (safe_str(c.get(k_dir)) if k_dir else "")
         direccion = st.text_input("Dirección", value=valor_dir, key=f"dir_{clave}")
@@ -693,28 +606,85 @@ def render_visita(clave, c):
             departamento = st.text_input("Departamento", value=valor_depto, key=f"depto_{clave}")
             referencia = st.text_input("Referencia", value=data.get("referencia", ""), key=f"ref_{clave}")
 
+        # PASO 4 — Entrevista, comentarios y cliente visitado
         st.markdown("**Paso 4 · Observaciones**")
-        ahora = ahora_peru()
-        fecha_v = st.date_input("Fecha de visita", value=ahora.date(), key=f"fecha_{clave}")
-        hora_v = st.time_input("Hora de visita", value=ahora.time(), key=f"hora_{clave}")
+        ahora_v = ahora_peru()
         entrevista_con = st.text_input("Entrevista con", value=data.get("entrevista_con", ""), key=f"entrevista_{clave}")
         comentarios = st.text_area("Comentarios", value=data.get("comentarios", ""), key=f"comentarios_{clave}")
 
+        # Cliente visitado solo en negocio (es la visita principal)
+        if clave == "negocio":
+            st.markdown("**Cliente visitado**")
+            opciones_cv = ["— Selecciona —"] + CLIENTE_VISITADO_OPCIONES
+            idx_cv = 0
+            if st.session_state.get("cliente_visitado") in CLIENTE_VISITADO_OPCIONES:
+                idx_cv = CLIENTE_VISITADO_OPCIONES.index(st.session_state["cliente_visitado"]) + 1
+            opcion_cv = st.selectbox(
+                "Resultado de la visita", opciones_cv, index=idx_cv,
+                key=f"cv_{clave}", label_visibility="collapsed",
+            )
+            if opcion_cv in CLIENTE_VISITADO_OPCIONES:
+                st.session_state["cliente_visitado"] = opcion_cv
+
+        # FOTO + GPS AUTOMÁTICO (al final, como indicaste)
+        etiqueta_foto = "Foto de verificación (obligatoria)" if obligatoria else "Foto de verificación (opcional)"
+        st.markdown(f"**📷 {etiqueta_foto}**")
+        st.caption("Al tomar la foto se captura automáticamente la ubicación GPS del dispositivo.")
+
+        foto_camara = st.camera_input("Tomar foto ahora", key=f"camara_{clave}")
+        foto_archivo = st.file_uploader("...o subir desde galería", type=["jpg", "jpeg", "png"], key=f"upload_{clave}")
+        foto_final = foto_camara if foto_camara is not None else foto_archivo
+        if foto_final is None and data.get("foto_bytes"):
+            st.image(data["foto_bytes"], caption="Foto guardada previamente", width=200)
+        if obligatoria and foto_final is None and not data.get("foto_bytes"):
+            st.warning("⚠ Esta sección requiere foto de verificación antes de guardar.")
+
+        # GPS — se activa automáticamente en cuanto hay foto
+        lat, lon, precision = data.get("lat"), data.get("lon"), data.get("precision")
+        foto_presente = foto_final is not None or bool(data.get("foto_bytes"))
+
+        if foto_presente:
+            if not (lat and lon):
+                st.session_state[f"solicitar_gps_{clave}"] = True
+
+        if st.session_state.get(f"solicitar_gps_{clave}"):
+            try:
+                from streamlit_js_eval import get_geolocation
+                loc = get_geolocation(key=f"geo_{clave}")
+                if loc and "coords" in loc:
+                    lat = loc["coords"]["latitude"]
+                    lon = loc["coords"]["longitude"]
+                    precision = loc["coords"].get("accuracy")
+                    st.session_state[f"solicitar_gps_{clave}"] = False
+                else:
+                    st.info("📡 Obteniendo ubicación del dispositivo... acepta el permiso si el navegador lo solicita.")
+            except Exception:
+                st.warning("Geolocalización no disponible. Revisa los permisos del navegador.")
+                st.session_state[f"solicitar_gps_{clave}"] = False
+
+        if lat and lon:
+            st.success(f"📍 Lat: {lat:.6f} · Lon: {lon:.6f}" + (f" (±{precision:.0f} m)" if precision else ""))
+            st.map(pd.DataFrame({"lat": [lat], "lon": [lon]}), zoom=15, height=160)
+        elif foto_presente:
+            st.caption("📡 Capturando ubicación...")
+        else:
+            st.caption("La ubicación se capturará automáticamente al tomar la foto.")
+
         puede_guardar = (not obligatoria) or foto_final is not None or bool(data.get("foto_bytes"))
-        if st.button(f"💾 Guardar visita de {etiqueta}", key=f"guardar_{clave}", use_container_width=True,
-                     type="primary", disabled=not puede_guardar):
+        if st.button(f"💾 Guardar visita de {etiqueta}", key=f"guardar_{clave}",
+                     use_container_width=True, type="primary", disabled=not puede_guardar):
             st.session_state.visitas[clave] = {
                 "direccion": direccion, "distrito": distrito, "provincia": provincia,
                 "departamento": departamento, "referencia": referencia,
-                "fecha": str(fecha_v), "hora": str(hora_v),
+                "fecha": ahora_v.strftime("%d/%m/%Y"), "hora": ahora_v.strftime("%H:%M:%S"),
                 "entrevista_con": entrevista_con, "comentarios": comentarios,
                 "lat": lat, "lon": lon, "precision": precision,
                 "foto_bytes": foto_final.getvalue() if foto_final is not None else data.get("foto_bytes"),
             }
             guardar_avance()
-            st.success(f"✅ Visita de {etiqueta} guardada — {fecha_v} {hora_v} (hora Perú)")
+            st.success(f"✅ Visita de {etiqueta} guardada — {ahora_v.strftime('%d/%m/%Y %H:%M:%S')} (hora Perú)")
         if not puede_guardar:
-            st.caption("Toma o sube la foto obligatoria del negocio para poder guardar esta sección.")
+            st.caption("Toma o sube la foto obligatoria para poder guardar.")
 
         if clave in visitas:
             badge("Registrada", "badge-ok")
@@ -753,9 +723,14 @@ def pantalla_reporte():
     if "negocio" not in visitas:
         st.warning("Acción requerida — falta la visita obligatoria al **Negocio**. Puedes generar el reporte igual; quedará indicado como pendiente.")
 
-    criterios_dict = {k: v for k, v in st.session_state.items() if k.startswith("chk_")}
+    # Leer criterios desde el snapshot guardado al avanzar de pantalla
+    # (más confiable que leer directo los widgets, que Streamlit puede
+    # haber limpiado al cambiar de pantalla). Si no hay snapshot, cae al
+    # session_state normal como respaldo.
+    criterios_dict = st.session_state.get("_criterios_snapshot") or \
+                     {k: v for k, v in st.session_state.items() if k.startswith("chk_")}
     criterios_txt = criterios_seleccionados_lista(criterios_dict, st.session_state.get("calif_revision", ""))
-    observacion_criterio = st.session_state.get("observacion_criterio", "")
+    observacion_criterio = ""  # campo eliminado
     ing = {k: st.session_state.get(k, 0.0) for k in [
         "ingreso_principal", "otros_ingresos", "op_alquiler", "op_servicios", "op_transporte",
         "op_mercaderia", "op_publicidad", "op_otros", "fam_alimentacion", "fam_vivienda",
@@ -789,9 +764,6 @@ def pantalla_reporte():
                 )
         else:
             st.caption("Ninguno marcado en la vista Criterio.")
-
-        st.markdown("**📝 Observación** (de la vista Criterio):")
-        st.caption(observacion_criterio if observacion_criterio else "Sin observación registrada.")
 
     with st.container(border=True):
         st.markdown("**Generar y descargar reporte**")
@@ -891,7 +863,7 @@ def pantalla_reporte():
             st.session_state.rcc = []
             st.session_state.ultimo_archivo = None
             st.session_state.cliente_visitado = ""
-            st.session_state.observacion_criterio = ""
+    
             ir_a("busqueda")
     st.markdown('</div>', unsafe_allow_html=True)
 
