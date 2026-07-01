@@ -796,20 +796,11 @@ def generar_pdf(cliente, criterios_txt, ingresos_calc, ingresos_raw, visitas, ga
         ("Resultado de la visita / Cliente visitado", cliente_visitado or "-"),
     ]))
 
-    elems.append(Paragraph("II. Ingresos y gastos", h2))
-    elems.append(tabla_kv([
-        ("Total ingresos", fmt_money(ingresos_calc["total_ingresos"])),
-        ("Gastos operativos", fmt_money(ingresos_calc["gastos_operativos"])),
-        ("Gastos familiares", fmt_money(ingresos_calc["gastos_familiares"])),
-        ("Total gastos", fmt_money(ingresos_calc["total_gastos"])),
-        ("Utilidad neta", fmt_money(ingresos_calc["utilidad_neta"])),
-        ("Margen", f"{ingresos_calc['margen']:.1f}%"),
-    ]))
-
-    for clave, titulo in [("negocio", "III. Visita al negocio (dirección del negocio)"),
-                           ("laboral", "IV. Visita al centro laboral"),
-                           ("aval", "V. Visita al aval"),
-                           ("domicilio", "VI. Visita al domicilio")]:
+   
+    for i(clave, titulo in enumerate[("negocio", "II. Visita al negocio (dirección del negocio)"),
+                           ("laboral", "III. Visita al centro laboral"),
+                           ("aval", "IV. Visita al aval"),
+                           ("domicilio", "V. Visita al domicilio")], start=2):
         d = visitas.get(clave)
         elems.append(Paragraph(titulo, h2))
         if d:
