@@ -533,6 +533,12 @@ def pantalla_ficha():
     st.markdown('</div>', unsafe_allow_html=True)
 
 
+# --------------------------------------------------------------------------
+# (Se eliminó la pantalla de "Ingresos y Gastos" / evaluación de crédito
+#  detallada a pedido — esa vista ya no se muestra en la app. Los cálculos
+#  de utilidad neta quedan en 0 por defecto en el reporte si no se usan.)
+# --------------------------------------------------------------------------
+
 
 # --------------------------------------------------------------------------
 # PANTALLA 5 — UBICACIÓN (VISITA: DOMICILIO / NEGOCIO / AVAL)
@@ -548,18 +554,6 @@ TIPOS_VISITA = {
 def pantalla_ubicacion():
     c = cliente()
     header("📍", "Nueva Visita", "Verificación: negocio (obligatorio), laboral, aval y domicilio (opcionales)")
-    
-    with st.container(border=True):
-        st.markdown("**Cliente visitado** — resultado general de esta visita")
-        idx_actual = (
-            CLIENTE_VISITADO_OPCIONES.index(st.session_state.cliente_visitado)
-            if st.session_state.cliente_visitado in CLIENTE_VISITADO_OPCIONES else 0
-        )
-        seleccion = st.selectbox(
-            "Selecciona una opción", CLIENTE_VISITADO_OPCIONES, index=idx_actual,
-            key="sel_cliente_visitado", label_visibility="collapsed",
-        )
-        st.session_state.cliente_visitado = seleccion
 
     tabs = st.tabs([f"{TIPOS_VISITA[t][0]} {TIPOS_VISITA[t][1]}" for t in TIPOS_VISITA])
     for tab, clave in zip(tabs, TIPOS_VISITA):
