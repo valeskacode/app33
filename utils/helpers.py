@@ -797,7 +797,7 @@ def generar_pdf(cliente, criterios_txt, ingresos_calc, ingresos_raw, visitas, ga
     ]))
 
    
-    for i(clave, titulo in enumerate[("negocio", "II. Visita al negocio (dirección del negocio)"),
+    for i,(clave, titulo) in enumerate([("negocio", "II. Visita al negocio (dirección del negocio)"),
                            ("laboral", "III. Visita al centro laboral"),
                            ("aval", "IV. Visita al aval"),
                            ("domicilio", "V. Visita al domicilio")], start=2):
