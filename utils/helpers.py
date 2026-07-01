@@ -408,6 +408,7 @@ HISTORIAL_COLUMNS = [
     "N_Visita_Agencia", "N_Visita_General",
     "ClienteVisitado", "Fecha", "Hora",
     "TipoArchivo", "NombreArchivo", "RutaGuardado", "CriteriosSeleccionados",
+    "NumeroOperacion", "Modulo", "AnalistaVigente", "AnalistaEvaluador",
 ]
 
 
@@ -451,6 +452,10 @@ def registrar_historial(usuario, cliente_actual, tipo_archivo, nombre_archivo,
         cliente_visitado,
         ahora.strftime("%d/%m/%Y"), ahora.strftime("%H:%M:%S"),
         tipo_archivo, nombre_archivo, ruta_guardado, criterios_texto,
+        safe_str(cliente_actual.get("BCOPER")),
+        safe_str(cliente_actual.get("MODULO")),
+        safe_str(cliente_actual.get("ANALISTA")),
+        safe_str(cliente_actual.get("ANALISTA_EVAL")),
     ]
     if os.path.exists(HISTORIAL_PATH):
         wb = openpyxl.load_workbook(HISTORIAL_PATH)
@@ -505,6 +510,152 @@ def reporte_consolidado_por_cliente(agencia=None):
         .sort_values("Reportes_Generados", ascending=False)
     )
     return resumen
+
+
+def reporte_anexo07(agencia=None):
+    """Detalle de visitas en el formato oficial 'Anexo 07 — Resultado de
+    visitas' (Gerencia de Auditoría Interna): una fila por cliente
+    visitado, con cuenta, número de operación, módulo, analista vigente,
+    analista evaluador y el resultado/observación de la visita.
+
+    Si el mismo cliente tiene varias filas en el historial (p.ej. porque
+    se descargó Word y PDF, o se generó más de un reporte), se conserva
+    solo la más reciente.
+    """
+    columnas = [
+        "Agencia", "Cuenta", "NumeroOperacion", "Cliente", "Modulo",
+        "AnalistaVigente", "AnalistaEvaluador", "ClienteVisitado",
+        "_orden",
+    ]
+    hist = leer_historial()
+    if hist.empty:
+        return pd.DataFrame(columns=columnas[:-1])
+
+    if agencia and "Agencia" in hist.columns:
+        hist = hist[hist["Agencia"].astype(str).str.strip() == str(agencia).strip()]
+
+    if hist.empty:
+        return pd.DataFrame(columns=columnas[:-1])
+
+    hist = hist.copy()
+    for col in ("NumeroOperacion", "Modulo", "AnalistaVigente", "AnalistaEvaluador"):
+        if col not in hist.columns:
+            hist[col] = ""
+        hist[col] = hist[col].fillna("").astype(str)
+
+    # Orden cronológico para poder quedarnos con el registro más reciente
+    # de cada cliente (fecha + hora, en formato dd/mm/aaaa y HH:MM:SS).
+    hist["_orden"] = pd.to_datetime(
+        hist["Fecha"].astype(str) + " " + hist["Hora"].astype(str),
+        format="%d/%m/%Y %H:%M:%S", errors="coerce",
+    )
+
+    clave = ["Cuenta", "DNI"] if "DNI" in hist.columns else ["Cuenta"]
+    hist = hist.sort_values("_orden").drop_duplicates(subset=clave, keep="last")
+
+    detalle = hist.rename(columns={
+        "Cliente": "Cliente",
+        "ClienteVisitado": "ClienteVisitado",
+    })[["Agencia", "Cuenta", "NumeroOperacion", "Cliente", "Modulo",
+        "AnalistaVigente", "AnalistaEvaluador", "ClienteVisitado", "_orden"]]
+
+    detalle = detalle.sort_values("_orden").drop(columns="_orden").reset_index(drop=True)
+    return detalle
+
+
+def to_excel_anexo07(detalle: pd.DataFrame, agencia: str = "") -> bytes:
+    """Genera el Excel con el mismo formato del Anexo 07 usado por la
+    Gerencia de Auditoría Interna de Caja Arequipa (cabecera, tabla con
+    borde naranja y resumen de resultados al pie), a partir del detalle
+    devuelto por reporte_anexo07().
+    """
+    import openpyxl
+    from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Anexo 07"
+
+    headers = [
+        "N°", "Cuenta Cliente", "Número Operación", "Nombre de Cliente",
+        "Módulo", "Analista Vigente", "Analista Evaluador",
+        "Resultado de la visita", "Cliente visitado",
+    ]
+    n_cols = len(headers)
+
+    fill_naranja = PatternFill("solid", fgColor="FFC000")
+    borde_fino = Side(style="thin", color="1F4E78")
+    borde_celda = Border(top=borde_fino, bottom=borde_fino, left=borde_fino, right=borde_fino)
+    negrita = Font(bold=True)
+
+    # --- Cabecera institucional ---
+    ws["A1"] = "CAJA AREQUIPA"
+    ws["A1"].font = Font(bold=True)
+    ws.cell(row=1, column=n_cols).value = "CONFIDENCIAL"
+    ws.cell(row=1, column=n_cols).font = Font(bold=True)
+
+    ws["A2"] = "GERENCIA DE AUDITORÍA INTERNA"
+    ws["A2"].font = Font(bold=True)
+    ws.cell(row=2, column=n_cols).value = "ANEXO 07"
+    ws.cell(row=2, column=n_cols).font = Font(bold=True)
+
+    ws["A3"] = "REF: RESULTADO DE VISITAS"
+    ws["A3"].font = Font(bold=True)
+
+    ws["A4"] = f"AGENCIA {agencia or '(TODAS)'}"
+    ws["A4"].font = Font(bold=True)
+
+    fila_encabezado = 6
+    for j, titulo in enumerate(headers, start=1):
+        celda = ws.cell(row=fila_encabezado, column=j, value=titulo)
+        celda.font = negrita
+        celda.fill = fill_naranja
+        celda.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        celda.border = borde_celda
+
+    conteo_resultados = {}
+    fila_actual = fila_encabezado + 1
+    for i, (_, fila) in enumerate(detalle.iterrows(), start=1):
+        resultado_visita = "SI"
+        cliente_visitado = safe_str(fila.get("ClienteVisitado")) or "-"
+        valores = [
+            i,
+            safe_str(fila.get("Cuenta")),
+            safe_str(fila.get("NumeroOperacion")),
+            safe_str(fila.get("Cliente")),
+            safe_str(fila.get("Modulo")),
+            safe_str(fila.get("AnalistaVigente")),
+            safe_str(fila.get("AnalistaEvaluador")),
+            resultado_visita,
+            cliente_visitado,
+        ]
+        for j, valor in enumerate(valores, start=1):
+            celda = ws.cell(row=fila_actual, column=j, value=valor)
+            celda.border = borde_celda
+            if j == 1 or j == 8:
+                celda.alignment = Alignment(horizontal="center")
+        conteo_resultados[cliente_visitado] = conteo_resultados.get(cliente_visitado, 0) + 1
+        fila_actual += 1
+
+    # --- Resumen (igual que en el anexo original: conteo por categoría) ---
+    fila_actual += 1
+    ws.cell(row=fila_actual, column=1, value="Resumen:").font = negrita
+    fila_actual += 1
+    orden_categorias = [c for c in CLIENTE_VISITADO_OPCIONES if c in conteo_resultados]
+    otras_categorias = [c for c in conteo_resultados if c not in CLIENTE_VISITADO_OPCIONES]
+    for categoria in orden_categorias + otras_categorias:
+        ws.cell(row=fila_actual, column=1,
+                 value=f"{categoria} ({conteo_resultados[categoria]})")
+        fila_actual += 1
+
+    anchos = [5, 16, 16, 30, 22, 18, 18, 14, 32]
+    for j, ancho in enumerate(anchos, start=1):
+        ws.column_dimensions[get_column_letter(j)].width = ancho
+
+    output = io.BytesIO()
+    wb.save(output)
+    return output.getvalue()
 
 
 def guardar_reporte_en_carpeta(nombre_archivo: str, contenido_bytes: bytes) -> dict:
