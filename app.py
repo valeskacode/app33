@@ -13,6 +13,7 @@ from datetime import datetime
 
 import pandas as pd
 import streamlit as st
+import io
 
 from utils.helpers import (
     load_css, safe_str, safe_float, fmt_money, slug,
@@ -25,6 +26,7 @@ from utils.helpers import (
     reporte_consolidado_por_agencia, reporte_consolidado_por_cliente,
     # 📌 NUEVO — para la pantalla de Búsqueda igualando el mockup:
     iniciales, clase_calificacion, clientes_similares, solo_digitos,
+    to_excel
 )
 
 st.set_page_config(
@@ -892,13 +894,25 @@ def pantalla_consolidado():
         sorted(resumen_agencia["Agencia"].dropna().astype(str).unique().tolist())
         if len(resumen_agencia) else []
     )
+    
     with st.container(border=True):
         st.markdown("**Detalle por cliente**")
         agencia_sel = st.selectbox("Filtrar por agencia", agencias_disponibles, key="sel_agencia_consolidado")
         filtro = None if agencia_sel == "(Todas)" else agencia_sel
         detalle = reporte_consolidado_por_cliente(filtro)
+        
         if len(detalle):
             st.dataframe(detalle, use_container_width=True, hide_index=True)
+            
+            # --- Lógica de descarga agregada ---
+            excel_data = to_excel(detalle)
+            st.download_button(
+                label="📥 Descargar Detalle en Excel",
+                data=excel_data,
+                file_name=f"Reporte_Consolidado_{agencia_sel if agencia_sel != '(Todas)' else 'Todas'}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
         else:
             st.caption("Sin datos para este filtro todavía.")
 
