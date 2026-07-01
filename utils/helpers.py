@@ -835,6 +835,16 @@ def generar_pdf(cliente, criterios_txt, ingresos_calc, ingresos_raw, visitas, ga
         ("Fecha", ahora_peru().strftime("%d/%m/%Y")),
     ]))
 
+    def to_excel(df):
+    """
+    Convierte un DataFrame a formato Excel (bytes) para descarga.
+    Requiere que la librería 'xlsxwriter' esté instalada: pip install xlsxwriter
+    """
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name='Resumen')
+    return output.getvalue()
+    
     docpdf.build(elems)
     buf.seek(0)
     return buf
