@@ -548,7 +548,7 @@ TIPOS_VISITA = {
 def pantalla_ubicacion():
     c = cliente()
     header("📍", "Nueva Visita", "Verificación: negocio (obligatorio), laboral, aval y domicilio (opcionales)")
-    """
+    
     with st.container(border=True):
         st.markdown("**Cliente visitado** — resultado general de esta visita")
         idx_actual = (
@@ -577,7 +577,7 @@ def pantalla_ubicacion():
             guardar_avance()
             ir_a("reporte")
     st.markdown('</div>', unsafe_allow_html=True)
-"""
+
 
 def render_visita(clave, c):
     icono, etiqueta, k_dir, k_dist, k_prov, k_depto, obligatoria = TIPOS_VISITA[clave]
