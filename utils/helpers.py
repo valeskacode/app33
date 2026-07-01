@@ -704,7 +704,7 @@ def generar_word(cliente, criterios_txt, ingresos_calc, ingresos_raw, visitas, g
                 except Exception as e:
                     doc.add_paragraph("⚠ Error al procesar la imagen de la visita.")
                     print(f"Error técnico al insertar imagen: {e}")
-         else:
+        else:
             doc.add_paragraph("⚠ No se registró visita de verificación para esta sección.")
 
     if garantias:
