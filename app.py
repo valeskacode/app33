@@ -759,49 +759,63 @@ def pantalla_reporte():
 
         base_nombre = f"Visita_{slug(c.get('CLIENTE'))}_{ahora_peru().strftime('%Y%m%d_%H%M')}"
 
+        # Pre-generar los bytes para Word y PDF ANTES de dibujar los botones.
+        # st.download_button descarga al primer clic sin necesitar un segundo
+        # botón separado — la generación ocurre aquí, en el servidor, y el
+        # archivo llega al celular/PC en ese mismo clic.
+        with st.spinner("Preparando archivos..."):
+            buf_word = generar_word(c, criterios_txt, calc, ing, visitas,
+                                    st.session_state.garantias, st.session_state.rcc,
+                                    st.session_state.usuario, cliente_visitado, observacion_criterio)
+            buf_pdf  = generar_pdf(c, criterios_txt, calc, ing, visitas,
+                                   st.session_state.garantias, st.session_state.rcc,
+                                   st.session_state.usuario, cliente_visitado, observacion_criterio)
+
+        nombre_word = base_nombre + ".docx"
+        nombre_pdf  = base_nombre + ".pdf"
+        mime_word   = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        mime_pdf    = "application/pdf"
+
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("📝 Generar Word", use_container_width=True, type="primary"):
-                buf = generar_word(c, criterios_txt, calc, ing, visitas, st.session_state.garantias,
-                                    st.session_state.rcc, st.session_state.usuario, cliente_visitado,
-                                    observacion_criterio)
-                nombre = base_nombre + ".docx"
-                guardado = guardar_reporte_en_carpeta(nombre, buf.getvalue())
-                sincronizar_historial_onedrive()
-                n_ag, n_gen = registrar_historial(st.session_state.usuario, c, "Word", nombre,
-                                                   "; ".join(criterios_txt), cliente_visitado,
-                                                   guardado.get("online") or guardado.get("local"))
-                st.session_state.ultimo_archivo = (nombre, buf.getvalue(), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-                st.session_state["ultimo_conteo"] = (n_ag, n_gen, guardado)
+            descargado_word = st.download_button(
+                "📝 Generar y descargar Word",
+                data=buf_word.getvalue(), file_name=nombre_word, mime=mime_word,
+                use_container_width=True, type="primary", key="dl_word",
+            )
         with c2:
-            if st.button("📕 Generar PDF", use_container_width=True, type="primary"):
-                buf = generar_pdf(c, criterios_txt, calc, ing, visitas, st.session_state.garantias,
-                                   st.session_state.rcc, st.session_state.usuario, cliente_visitado,
-                                   observacion_criterio)
-                nombre = base_nombre + ".pdf"
-                guardado = guardar_reporte_en_carpeta(nombre, buf.getvalue())
-                sincronizar_historial_onedrive()
-                n_ag, n_gen = registrar_historial(st.session_state.usuario, c, "PDF", nombre,
-                                                   "; ".join(criterios_txt), cliente_visitado,
-                                                   guardado.get("online") or guardado.get("local"))
-                st.session_state.ultimo_archivo = (nombre, buf.getvalue(), "application/pdf")
-                st.session_state["ultimo_conteo"] = (n_ag, n_gen, guardado)
+            descargado_pdf = st.download_button(
+                "📕 Generar y descargar PDF",
+                data=buf_pdf.getvalue(), file_name=nombre_pdf, mime=mime_pdf,
+                use_container_width=True, type="primary", key="dl_pdf",
+            )
 
-        if st.session_state.ultimo_archivo:
-            nombre, contenido, mime = st.session_state.ultimo_archivo
-            st.download_button(f"⬇️ Descargar {nombre}", data=contenido, file_name=nombre, mime=mime, use_container_width=True)
-            n_ag, n_gen, guardado = st.session_state.get("ultimo_conteo", (None, None, {}))
+        # Registrar historial y guardar copia solo cuando se descargó
+        if descargado_word:
+            guardado = guardar_reporte_en_carpeta(nombre_word, buf_word.getvalue())
+            sincronizar_historial_onedrive()
+            n_ag, n_gen = registrar_historial(st.session_state.usuario, c, "Word", nombre_word,
+                                               "; ".join(criterios_txt), cliente_visitado,
+                                               guardado.get("online") or guardado.get("local"))
+            st.session_state["ultimo_conteo"] = (n_ag, n_gen, guardado)
+
+        if descargado_pdf:
+            guardado = guardar_reporte_en_carpeta(nombre_pdf, buf_pdf.getvalue())
+            sincronizar_historial_onedrive()
+            n_ag, n_gen = registrar_historial(st.session_state.usuario, c, "PDF", nombre_pdf,
+                                               "; ".join(criterios_txt), cliente_visitado,
+                                               guardado.get("online") or guardado.get("local"))
+            st.session_state["ultimo_conteo"] = (n_ag, n_gen, guardado)
+
+        if st.session_state.get("ultimo_conteo"):
+            n_ag, n_gen, guardado = st.session_state["ultimo_conteo"]
             agencia_txt = safe_str(c.get("AGENCIA"), "-")
-            if n_ag is not None:
-                st.success(
-                    f"Reporte generado. Visita N° {n_ag} en la agencia **{agencia_txt}** "
-                    f"(N° {n_gen} en general)."
-                )
+            st.success(f"✅ Descargado. Visita N° {n_ag} en agencia **{agencia_txt}** (N° {n_gen} general).")
             if isinstance(guardado, dict):
                 if guardado.get("online"):
                     st.markdown(f"☁️ **Subido a OneDrive:** [Abrir archivo]({guardado['online']})")
                 elif guardado.get("local"):
-                    st.caption(f"📁 Copia local guardada en: `{guardado['local']}`")
+                    st.caption(f"📁 Copia local: `{guardado['local']}`")
                 if guardado.get("error"):
                     st.caption(f"⚠ {guardado['error']}")
 
