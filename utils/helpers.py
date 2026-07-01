@@ -575,7 +575,7 @@ def to_excel_anexo07(detalle: pd.DataFrame, agencia: str = "") -> bytes:
 
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "Anexo 07"
+    ws.title = ""
 
     headers = [
         "N°", "Cuenta Cliente", "Número Operación", "Nombre de Cliente",
@@ -592,12 +592,12 @@ def to_excel_anexo07(detalle: pd.DataFrame, agencia: str = "") -> bytes:
     # --- Cabecera institucional ---
     ws["A1"] = "CAJA AREQUIPA"
     ws["A1"].font = Font(bold=True)
-    ws.cell(row=1, column=n_cols).value = "CONFIDENCIAL"
+    ws.cell(row=1, column=n_cols).value = ""
     ws.cell(row=1, column=n_cols).font = Font(bold=True)
 
     ws["A2"] = "GERENCIA DE AUDITORÍA INTERNA"
     ws["A2"].font = Font(bold=True)
-    ws.cell(row=2, column=n_cols).value = "ANEXO 07"
+    ws.cell(row=2, column=n_cols).value = ""
     ws.cell(row=2, column=n_cols).font = Font(bold=True)
 
     ws["A3"] = "REF: RESULTADO DE VISITAS"
