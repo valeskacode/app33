@@ -100,13 +100,7 @@ PASOS_LABEL = {
 
 
 def top_menu():
-    """Barra de navegación. 📌 MEJORA: antes se dibujaba como una fila de
-    botones normales arriba de la pantalla; ahora, con el <div
-    class="marker-bottomnav"> de abajo + las reglas CSS en
-    assets/style.css, esa misma fila de botones se ve FIJA abajo de la
-    pantalla, con apariencia de íconos (no de botones rojos) — igual a
-    la barra "Resumen / Clientes / Visitas / Más" del mockup. La lógica
-    de a dónde navega cada botón no cambió."""
+    """Barra de navegación.  "Resumen / Clientes / Visitas / Más" del mockup."""
     st.markdown('<div class="top-menu-spacer"></div>', unsafe_allow_html=True)
     pasos_visibles = list(PASOS) if st.session_state.cliente_actual is not None else ["busqueda"]
     mostrar_consolidado = st.session_state.df is not None
@@ -155,14 +149,14 @@ def guardar_avance():
 # en assets/style.css (sección "MEJORAS — Pantalla Buscar Cliente").
 # --------------------------------------------------------------------------
 def pantalla_busqueda():
-    header("🔍", "Buscar Cliente", "Encuentra a tu cliente por nombre, DNI o código", icono_derecha="❓")
+    header("👤", "Ingrese su usuaario", "Inserte su usuario para registrar la visita", icono_derecha="❓")
 
     # ---- Usuario (necesario para guardar avance/historial; no está en el
     # mockup porque ese diseño no contempló esta validación, pero la app
     # SÍ la necesita para no mezclar el progreso de distintos auditores) --
     cu1, cu2 = st.columns([1, 2.2])
     with cu1:
-        st.markdown('<div class="usuario-bar-label">👤 Usuario</div>', unsafe_allow_html=True)
+        st.markdown('<div class="usuario-bar-label">👤 Auditor</div>', unsafe_allow_html=True)
     with cu2:
         usuario = st.text_input(
             "Tu nombre / usuario", value=st.session_state.usuario, key="input_usuario",
