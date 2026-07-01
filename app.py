@@ -586,9 +586,9 @@ def pantalla_ubicacion():
 
 
 def render_visita(clave, c):
-    icono, etiqueta, k_dir, k_dist, k_prov, k_depto, obligatoria = TIPOS_VISITA[clave]
-    visitas = st.session_state.visitas
-    data = visitas.get(clave, {})
+    #icono, etiqueta, k_dir, k_dist, k_prov, k_depto, obligatoria = TIPOS_VISITA[clave]
+   #visitas = st.session_state.visitas
+   # data = visitas.get(clave, {})
 
     with st.container(border=True):
         # PASO 3 — Datos del lugar (primero)
