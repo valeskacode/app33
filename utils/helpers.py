@@ -15,6 +15,8 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
+from PIL import Image #importa imagen
+
 try:
     from zoneinfo import ZoneInfo
     TZ_PERU = ZoneInfo("America/Lima")
@@ -690,8 +692,19 @@ def generar_word(cliente, criterios_txt, ingresos_calc, ingresos_raw, visitas, g
                 ("GPS", f"{d.get('lat')}, {d.get('lon')}" if d.get("lat") else "No capturada"),
             ])
             if d.get("foto_bytes"):
-                doc.add_picture(io.BytesIO(d["foto_bytes"]), width=Cm(8))
-        else:
+                
+                try:
+                foto_stream = io.BytesIO(d["foto_bytes"])
+                img = Image.open(foto_stream)
+                buffer_limpio = io.BytesIO()
+                img.save(buffer_limpio, format='PNG')
+                buffer_limpio.seek(0)
+                doc.add_picture(buffer_limpio, width=Cm(8))
+                
+            except Exception as e:
+                doc.add_paragraph("⚠ Error al procesar la imagen de la visita.")
+                print(f"Error técnico al insertar imagen: {e}")
+         else:
             doc.add_paragraph("⚠ No se registró visita de verificación para esta sección.")
 
     if garantias:
