@@ -737,7 +737,7 @@ def pantalla_reporte():
         st.write(f"**Utilidad neta:** {fmt_money(calc['utilidad_neta'])}")
 
         st.markdown("---")
-        st.markdown("**🚩 Criterio seleccionado** (de la vista Criterio):")
+        st.markdown("**Criterio seleccionado**:")
         if criterios_txt:
             for ct in criterios_txt:
                 st.markdown(
