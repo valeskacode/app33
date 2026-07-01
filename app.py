@@ -149,7 +149,7 @@ def guardar_avance():
 # en assets/style.css (sección "MEJORAS — Pantalla Buscar Cliente").
 # --------------------------------------------------------------------------
 def pantalla_busqueda():
-    header("👤", "Ingrese su usuaario", "Inserte su usuario para registrar la visita", icono_derecha="❓")
+    header("👤", "Ingrese su usuario", "Inserte su usuario para registrar la visita", icono_derecha="❓")
 
     # ---- Usuario (necesario para guardar avance/historial; no está en el
     # mockup porque ese diseño no contempló esta validación, pero la app
@@ -160,7 +160,7 @@ def pantalla_busqueda():
     with cu2:
         usuario = st.text_input(
             "Tu nombre / usuario", value=st.session_state.usuario, key="input_usuario",
-            placeholder="Ej: ACEJ", label_visibility="collapsed",
+            placeholder="Ej: ASDL", label_visibility="collapsed",
         )
         st.session_state.usuario = usuario.strip()
     if not st.session_state.usuario:
